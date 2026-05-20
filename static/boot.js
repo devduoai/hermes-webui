@@ -1421,7 +1421,30 @@ function applyBotName(){
     window._busyInputMode=(s.busy_input_mode||'queue');
     window._sessionEndlessScrollEnabled=!!s.session_endless_scroll;
     window._botName=s.bot_name||'Hermes';
-    if(s.default_model) window._defaultModel=s.default_model;
+    if(s.default_model_provider) window._activeProvider=s.default_model_provider;
+    if(s.default_model){
+      window._defaultModel=s.default_model;
+      const sel=$('modelSelect');
+      const savedState=(typeof _readPersistedModelState==='function')
+        ? _readPersistedModelState()
+        : (localStorage.getItem('hermes-webui-model')?{model:localStorage.getItem('hermes-webui-model'),model_provider:null}:null);
+      if(sel&&!savedState&&typeof _applyModelToDropdown==='function'){
+        const existingDefaultOpt=Array.from(sel.options).find(o=>o.value===s.default_model);
+        if(existingDefaultOpt&&window._activeProvider&&!existingDefaultOpt.dataset.provider){
+          existingDefaultOpt.dataset.provider=window._activeProvider;
+        }
+        if(!existingDefaultOpt){
+          const opt=document.createElement('option');
+          opt.value=s.default_model;
+          opt.textContent=typeof getModelLabel==='function'?getModelLabel(s.default_model):s.default_model;
+          opt.dataset.custom='1';
+          opt.dataset.provider=window._activeProvider||'';
+          sel.querySelectorAll('option[data-custom]').forEach(o=>o.remove());
+          sel.appendChild(opt);
+        }
+        _applyModelToDropdown(s.default_model,sel,window._activeProvider||null);
+      }
+    }
     window._sessionJumpButtonsEnabled=!!s.session_jump_buttons;
     // Reconcile appearance: prefer localStorage (what the user last saw) over
     // the server.  If they diverge (e.g. a previous autosave POST failed),
@@ -1510,7 +1533,7 @@ function applyBotName(){
   // Fetch available models without blocking session restore. The static HTML
   // options are enough for first paint; the dynamic provider list can settle
   // after the saved session is visible.
-  const _modelDropdownReady=populateModelDropdown().then(()=>{
+  const _hydrateBootModelDropdown=()=>populateModelDropdown().then(()=>{
     const savedState=(typeof _readPersistedModelState==='function')
       ? _readPersistedModelState()
       : (localStorage.getItem('hermes-webui-model')?{model:localStorage.getItem('hermes-webui-model'),model_provider:null}:null);
@@ -1529,13 +1552,25 @@ function applyBotName(){
     }
     if(S.session) syncTopbar();
   }).catch(()=>{});
-  window._modelDropdownReady=_modelDropdownReady;
-  // Pre-load workspace list so sidebar name is correct from first render.
+  const _startBootModelDropdown=()=>{
+    const ready=window._modelDropdownReady;
+    if(ready&&typeof ready.then==='function') return ready;
+    const next=_hydrateBootModelDropdown();
+    window._modelDropdownReady=next;
+    return next;
+  };
+  window._modelDropdownReady=null;
+  window._ensureModelDropdownReady=_startBootModelDropdown;
+  // Start independent boot fetches without holding the conversation list behind
+  // them. The sidebar can render from /api/sessions while workspace/onboarding
+  // metadata settles in parallel.
+  const _workspaceListReady=loadWorkspaceList();
+  const _onboardingReady=_bootSettings.onboarding_completed?Promise.resolve(false):loadOnboardingWizard();
   // Render the session list before restoring the saved conversation so a stale
   // saved-session/client-side boot error cannot leave the sidebar empty forever.
-  await loadWorkspaceList();
-  await loadOnboardingWizard();
   await renderSessionList();
+  await _workspaceListReady;
+  await _onboardingReady;
   _initResizePanels();
   // Workspace panel restore happens AFTER loadSession so we know if
   // the session has a workspace — prevents the snap-open-then-closed flash (#576).

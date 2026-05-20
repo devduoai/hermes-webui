@@ -1476,6 +1476,7 @@ async function toggleModelDropdown(){
   if(typeof closeWsDropdown==='function') closeWsDropdown();
   if(typeof closeReasoningDropdown==='function') closeReasoningDropdown();
   if(typeof closeToolsetsDropdown==='function') closeToolsetsDropdown();
+  if(typeof window._ensureModelDropdownReady==='function') window._ensureModelDropdownReady();
   const ready=window._modelDropdownReady;
   if(ready&&typeof ready.then==='function'){
     try{await ready;}catch(_){}

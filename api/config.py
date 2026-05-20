@@ -4430,6 +4430,12 @@ def load_settings() -> dict:
         stored.get("skin") if isinstance(stored, dict) else settings.get("skin"),
     )
     settings["default_model"] = get_effective_default_model()
+    try:
+        model_cfg = get_config().get("model", {})
+        if isinstance(model_cfg, dict) and model_cfg.get("provider"):
+            settings["default_model_provider"] = str(model_cfg.get("provider"))
+    except Exception:
+        logger.debug("Failed to resolve default model provider for settings")
     return settings
 
 

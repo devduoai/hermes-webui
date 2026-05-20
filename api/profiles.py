@@ -914,10 +914,12 @@ def switch_profile(name: str, *, process_wide: bool = True) -> dict:
             cfg = {}
     model_cfg = cfg.get('model', {})
     default_model = None
+    default_model_provider = None
     if isinstance(model_cfg, str):
         default_model = model_cfg
     elif isinstance(model_cfg, dict):
         default_model = model_cfg.get('default')
+        default_model_provider = model_cfg.get('provider')
 
     # Read the target profile's workspace directly from *home* rather than via
     # get_last_workspace() which routes through the thread-local/process-global active
@@ -969,6 +971,7 @@ def switch_profile(name: str, *, process_wide: bool = True) -> dict:
         'profiles': list_profiles_api(),
         'active': name,
         'default_model': default_model,
+        'default_model_provider': default_model_provider,
         'default_workspace': default_workspace,
     }
 
