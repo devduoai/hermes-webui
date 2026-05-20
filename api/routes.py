@@ -9080,6 +9080,9 @@ def _handle_clarify_respond(handler, body):
         ok = _resolve_clarify_legacy(sid, clarify_id, response)
 
     if not ok:
+        # Both the runtime adapter and legacy paths set ok=False for
+        # stale/expired/wrong-session responses.  The 409 status applies
+        # uniformly regardless of which path resolved the clarify request.
         return j(handler, {
             "ok": False,
             "error": "Clarification prompt expired or not found. The agent may have already proceeded.",
