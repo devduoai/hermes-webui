@@ -5,7 +5,7 @@
 
 ### Changed
 
-- Removing a provider key now surfaces "Session expired. Reload the page and try again." when the underlying POST is rejected with 403, instead of the raw "Cross-origin request rejected" string that gives the user no next step. (Refs #2572)
+- Removing a provider key now surfaces the server's specific CSRF rejection reason ("Session expired - reload the page", "Cross-origin mismatch - check reverse proxy headers", or the fallback "Cross-origin request rejected") when the underlying POST is rejected with 403, instead of swallowing all three into one generic toast. (Refs #2572)
 
 ## [v0.51.137] — 2026-05-25 — Release DI (stage-batch19 — 6-PR medium-risk batch)
 

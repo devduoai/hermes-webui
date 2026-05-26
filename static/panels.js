@@ -6875,13 +6875,15 @@ async function _removeProviderKey(providerId){
     }
   }catch(e){
     // A 403 from /api/providers/delete fires when the CSRF cookie/header
-    // pair has drifted (typically a tab opened before the most recent
-    // login or cookie rotation). The raw server string is
-    // "Cross-origin request rejected" which reads like a deployment-shape
-    // problem and gives the user no next step (#2572). Surface a clearer
-    // recovery hint instead so reloading the page is an obvious fix.
+    // pair has drifted. The server distinguishes three reasons in
+    // api/routes.py:_csrf_rejection_error ("Session expired - reload the
+    // page", "Cross-origin mismatch - check reverse proxy headers", and
+    // the fallback "Cross-origin request rejected"); api()'s catch lifts
+    // that string onto e.message. Pass it through verbatim so the
+    // deployment-shape failure #2572 calls out keeps its actionable hint
+    // instead of being flattened to a single generic toast.
     if(e&&e.status===403){
-      showToast('Session expired. Reload the page and try again.',6000,'error');
+      showToast(e.message||'Session expired. Reload the page and try again.',6000,'error');
     }else{
       showToast('Error: '+e.message);
     }
