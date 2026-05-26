@@ -497,7 +497,34 @@ if(document.readyState==='complete'){
 }
 
 /* ── Image lightbox — click any .msg-media-img to enlarge ─────────────────── */
-function _openImgLightbox(src, alt) {
+function _openImgLightbox(imgEl) {
+  // Backward-compat: if called with (src, alt) from cached old code, convert.
+  if(typeof imgEl==='string'){
+    const src=imgEl, alt=arguments[1]||'';
+    const oldEl=document.querySelector(`.img-lightbox[aria-label="${esc(alt||'Image')}"]`);
+    _openImgLightboxWithNav(src, alt, [], 0);
+    return;
+  }
+  if(!imgEl || !imgEl.src) return;
+  const src=imgEl.src, alt=imgEl.alt||'';
+  // Find sibling images in the same message for prev/next navigation.
+  // Walk up from the clicked image to find the message container, then
+  // collect all .msg-media-img within it.
+  let allImages = [];
+  let startIndex = 0;
+  let container = imgEl.closest('.msg-row, .assistant-turn-blocks, .assistant-turn, .user-turn');
+  if(!container) container = imgEl.parentElement;
+  if(container){
+    const siblings = container.querySelectorAll('.msg-media-img');
+    if(siblings.length>1){
+      allImages = Array.from(siblings);
+      startIndex = allImages.indexOf(imgEl);
+      if(startIndex===-1) startIndex=0;
+    }
+  }
+  _openImgLightboxWithNav(src, alt, allImages, startIndex);
+}
+function _openImgLightboxWithNav(src, alt, images, index) {
   const lb = document.createElement('div');
   lb.className = 'img-lightbox';
   lb.setAttribute('role', 'dialog');
@@ -513,11 +540,66 @@ function _openImgLightbox(src, alt) {
   cls.onclick = () => _closeImgLightbox(lb);
   lb.appendChild(img);
   lb.appendChild(cls);
+  // Prev/Next navigation
+  const hasNav = images && images.length>1;
+  let counter = null;
+  if(hasNav){
+    const prevBtn = document.createElement('button');
+    prevBtn.className = 'img-lightbox-nav img-lightbox-nav-prev';
+    prevBtn.setAttribute('aria-label', 'Previous image');
+    prevBtn.innerHTML = '‹';
+    prevBtn.onclick = e => { e.stopPropagation(); _navigateLightbox(lb, images, index, -1); };
+    lb.appendChild(prevBtn);
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'img-lightbox-nav img-lightbox-nav-next';
+    nextBtn.setAttribute('aria-label', 'Next image');
+    nextBtn.innerHTML = '›';
+    nextBtn.onclick = e => { e.stopPropagation(); _navigateLightbox(lb, images, index, 1); };
+    lb.appendChild(nextBtn);
+    counter = document.createElement('div');
+    counter.className = 'img-lightbox-counter';
+    lb.appendChild(counter);
+    _updateLightboxCounter(counter, index, images.length);
+  }
   lb.onclick = () => _closeImgLightbox(lb);
   document.body.appendChild(lb);
-  // Close on Escape
-  lb._escHandler = e => { if(e.key==='Escape') _closeImgLightbox(lb); };
+  // Keyboard navigation + close
+  lb._escHandler = e => {
+    if(e.key==='Escape'){ _closeImgLightbox(lb); return; }
+    if(hasNav){
+      if(e.key==='ArrowLeft'){ e.preventDefault(); _navigateLightbox(lb, images, index, -1); }
+      if(e.key==='ArrowRight'){ e.preventDefault(); _navigateLightbox(lb, images, index, 1); }
+    }
+  };
   document.addEventListener('keydown', lb._escHandler);
+}
+function _navigateLightbox(lb, images, currentIndex, direction) {
+  const newIndex = currentIndex + direction;
+  if(newIndex<0 || newIndex>=images.length) return;
+  const nextImg = images[newIndex];
+  const lbImg = lb.querySelector('img');
+  lbImg.src = nextImg.src;
+  lbImg.alt = nextImg.alt || '';
+  lb.setAttribute('aria-label', nextImg.alt || 'Image');
+  // Update navigation onclick handlers by replacing them
+  const prevBtn = lb.querySelector('.img-lightbox-nav-prev');
+  const nextBtn = lb.querySelector('.img-lightbox-nav-next');
+  if(prevBtn) prevBtn.onclick = e => { e.stopPropagation(); _navigateLightbox(lb, images, newIndex, -1); };
+  if(nextBtn) nextBtn.onclick = e => { e.stopPropagation(); _navigateLightbox(lb, images, newIndex, 1); };
+  // Update counter
+  const counter = lb.querySelector('.img-lightbox-counter');
+  if(counter) _updateLightboxCounter(counter, newIndex, images.length);
+  // Rebind keyboard handler
+  document.removeEventListener('keydown', lb._escHandler);
+  lb._escHandler = e => {
+    if(e.key==='Escape'){ _closeImgLightbox(lb); return; }
+    if(e.key==='ArrowLeft'){ e.preventDefault(); _navigateLightbox(lb, images, newIndex, -1); }
+    if(e.key==='ArrowRight'){ e.preventDefault(); _navigateLightbox(lb, images, newIndex, 1); }
+  };
+  document.addEventListener('keydown', lb._escHandler);
+}
+function _updateLightboxCounter(el, index, total) {
+  el.textContent = (index+1) + ' / ' + total;
 }
 function _closeImgLightbox(lb) {
   if(!lb || !lb.parentNode) return;
@@ -530,14 +612,14 @@ document.addEventListener('click', e => {
   if(!e.target || !e.target.closest) return;
   // Message-attached images (already wired since v0.50.x).
   let img = e.target.closest('.msg-media-img');
-  if(img){ _openImgLightbox(img.src, img.alt); return; }
+  if(img){ _openImgLightbox(img); return; }
   // Composer attach-tray image thumbnails — click any pasted/dropped image
   // chip to lightbox-zoom it before sending. Excludes audio/video chips,
   // which keep their inline media controls. SVG thumbnails (.attach-thumb--svg)
   // are still images visually, so they qualify.
   img = e.target.closest('.attach-thumb');
   if(img && img.tagName === 'IMG'){
-    _openImgLightbox(img.src, img.alt || img.title || 'Attached image');
+    _openImgLightbox(img);
     return;
   }
 });
