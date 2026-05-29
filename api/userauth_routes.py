@@ -448,6 +448,23 @@ def handle_get_invite(handler, token: str) -> bool:
     return _html_page(handler, _accept_invite_page(invite["email"], token))
 
 
+def handle_get_login(handler) -> bool:
+    """GET /login — show the email+password login form (new per-user auth)."""
+    import urllib.parse as _up
+    raw_qs = handler.path.split("?", 1)[1] if "?" in handler.path else ""
+    qs = _up.parse_qs(raw_qs)
+    next_url = qs.get("next", ["/"])[0]
+    try:
+        parsed_next = _up.urlparse(_up.unquote(next_url))
+        if parsed_next.netloc:
+            next_url = "/"
+    except Exception:
+        next_url = "/"
+    if not next_url or not next_url.startswith("/"):
+        next_url = "/"
+    return _html_page(handler, _login_page(next_url=next_url))
+
+
 def handle_get_users_page(handler) -> bool:
     """GET /users/manage — HTML user management page."""
     user = _get_current_user(handler)

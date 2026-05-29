@@ -53,32 +53,41 @@ def test_all_routes_accessible_without_auth():
 
 
 def test_login_page_served():
-    """GET /login should return the login page HTML."""
+    """GET /login should return the new email+password login page HTML."""
     req = urllib.request.Request(BASE + "/login")
     with urllib.request.urlopen(req, timeout=10) as r:
         html = r.read().decode()
         assert r.status == 200
-        assert "Sign in" in html
-        assert "Hermes" in html
-        assert 'src="static/login.js?v=' in html
-        assert 'src="/static/login.js"' not in html
+        assert "Sign In" in html
+        # New login page must have an email input field
+        assert 'type="email"' in html or 'name="email"' in html
+        # Must NOT serve the legacy shared-password UI
+        assert "Enter your password to continue" not in html
 
 
 def test_login_page_cache_busts_login_script():
-    """GET /login must version login.js so stale cache/SW entries cannot trap old auth code."""
+    """Legacy _LOGIN_PAGE_HTML with login.js still exists in routes; the new /login
+    route now delegates to userauth_routes.handle_get_login instead.
+    This test verifies the delegation is in place."""
     from api import routes
-
-    assert "static/login.js?v={{WEBUI_VERSION}}" in routes._LOGIN_PAGE_HTML
+    import inspect
+    src = inspect.getsource(routes)
+    # The new /login block must delegate to handle_get_login
+    assert "handle_get_login" in src
 
 
 def test_login_route_injects_webui_version_for_login_script():
-    """The /login route should replace the login.js version placeholder."""
+    """The /login route now uses handle_get_login from userauth_routes;
+    verify routes.py no longer contains the legacy WEBUI_VERSION template
+    in the /login block — the legacy handler is removed."""
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[1].joinpath("api", "routes.py").read_text(encoding="utf-8")
     login_block = src[src.find('if parsed.path == "/login"'):src.find('if parsed.path == "/api/auth/status"')]
-    assert "WEBUI_VERSION" in login_block
-    assert "{{WEBUI_VERSION}}" in login_block
+    # New block must reference the new handler, not the legacy template
+    assert "handle_get_login" in login_block
+    # Legacy WEBUI_VERSION template injection must be gone from /login block
+    assert "{{WEBUI_VERSION}}" not in login_block
 
 
 # ── Security headers ─────────────────────────────────────────────────────
