@@ -91,23 +91,27 @@ def test_settings_whitespace_bot_name_defaults_to_hermes():
 
 
 # ── Login page rendering ──────────────────────────────────────────────────
+# Note: /login now serves the new per-user email+password login form
+# (api/userauth_routes.py handle_get_login). Bot name is no longer
+# rendered in the login title/h1 — the new form is provider-agnostic.
 
 def test_login_page_shows_default_bot_name():
-    """GET /login should contain 'Hermes' in title and h1 when default."""
+    """GET /login should return 200 and contain the email+password form."""
     html, status = get_raw("/login")
     assert status == 200
-    assert "<title>Hermes" in html
-    assert "<h1>Hermes</h1>" in html
+    # New login page has email field, not legacy shared-password field
+    assert 'type="email"' in html or 'name="email"' in html
+    # Must NOT contain legacy copy
+    assert "Enter your password to continue" not in html
 
 
 def test_login_page_shows_custom_bot_name():
-    """GET /login should reflect the configured bot_name."""
+    """GET /login returns 200 with email form regardless of bot_name setting."""
     try:
         post("/api/settings", {"bot_name": "Aria"})
         html, status = get_raw("/login")
         assert status == 200
-        assert "<title>Aria" in html
-        assert "<h1>Aria</h1>" in html
+        assert 'type="email"' in html or 'name="email"' in html
     finally:
         post("/api/settings", {"bot_name": "Hermes"})
 
@@ -119,18 +123,18 @@ def test_login_page_empty_name_does_not_crash():
     # Instead, verify that /login returns 200 reliably.
     html, status = get_raw("/login")
     assert status == 200
-    assert "Sign in" in html
+    assert 'type="email"' in html or 'name="email"' in html
 
 
 def test_login_page_xss_escaped():
-    """bot_name with HTML special chars should be escaped in the login page."""
+    """bot_name with HTML special chars — /login still returns 200 safely."""
     try:
         post("/api/settings", {"bot_name": "<script>alert(1)</script>"})
         html, status = get_raw("/login")
         assert status == 200
-        # Raw tag must not appear unescaped
+        # The new login page doesn't render bot_name at all, so the raw tag
+        # can't appear (but confirm the page is safe regardless)
         assert "<script>alert(1)</script>" not in html
-        # Escaped form should appear
-        assert "&lt;script&gt;" in html
     finally:
         post("/api/settings", {"bot_name": "Hermes"})
+
