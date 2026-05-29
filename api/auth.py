@@ -489,6 +489,15 @@ def parse_cookie(handler) -> str | None:
 def check_auth(handler, parsed) -> bool:
     """Check if request is authorized. Returns True if OK.
     If not authorized, sends 401 (API) or 302 redirect (page) and returns False."""
+    # Per-user auth system takes precedence when active (has at least one user)
+    try:
+        from api.userauth import is_userauth_active
+        if is_userauth_active():
+            from api.userauth_routes import userauth_check_auth
+            return userauth_check_auth(handler, parsed)
+    except Exception:
+        pass  # fall through to legacy password check
+
     if not is_auth_enabled():
         return True
     # Public paths don't require auth
