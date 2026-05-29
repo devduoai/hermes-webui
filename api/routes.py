@@ -1321,6 +1321,12 @@ def _csrf_exempt_path(path: str) -> bool:
         "/api/auth/passkey/options",
         "/api/auth/passkey/login",
         "/api/csp-report",
+        # Per-user auth: these are initial-auth pages without an existing session
+        "/auth/setup",
+        "/auth/login",
+        "/auth/logout",
+        "/auth/accept-invite",
+        "/users/invite",  # user management page doesn't carry legacy CSRF token
     }
 
 
@@ -3940,6 +3946,27 @@ def handle_get(handler, parsed) -> bool:
         except Exception as exc:
             return _serve_shell_unavailable(handler, exc)
 
+    if parsed.path == "/setup":
+        from api.userauth_routes import handle_get_setup
+        return handle_get_setup(handler)
+
+    if parsed.path.startswith("/invite/"):
+        token = parsed.path[len("/invite/"):]
+        from api.userauth_routes import handle_get_invite
+        return handle_get_invite(handler, token)
+
+    if parsed.path in ("/users/manage", "/users"):
+        from api.userauth_routes import handle_get_users_page
+        return handle_get_users_page(handler)
+
+    if parsed.path == "/auth/me":
+        from api.userauth_routes import handle_get_auth_me
+        return handle_get_auth_me(handler)
+
+    if parsed.path == "/api/users":
+        from api.userauth_routes import handle_get_users_api
+        return handle_get_users_api(handler)
+
     if parsed.path == "/login":
         _settings = load_settings()
         _bn = _html.escape(_settings.get("bot_name") or "Hermes")
@@ -5155,6 +5182,36 @@ def handle_post(handler, parsed) -> bool:
 
     if parsed.path == "/api/shutdown":
         return _handle_shutdown(handler)
+
+    # ── Per-user auth endpoints ─────────────────────────────────────────────
+    if parsed.path == "/auth/setup":
+        from api.userauth_routes import handle_post_setup, _read_form_or_json
+        _body = _read_form_or_json(handler)
+        return handle_post_setup(handler, _body)
+
+    if parsed.path == "/auth/login":
+        from api.userauth_routes import handle_post_login, _read_form_or_json
+        from urllib.parse import parse_qs
+        _body = _read_form_or_json(handler)
+        q = parse_qs(parsed.query) if parsed.query else {}
+        return handle_post_login(handler, _body, q)
+
+    if parsed.path == "/auth/logout":
+        from api.userauth_routes import handle_post_logout
+        return handle_post_logout(handler)
+
+    if parsed.path == "/users/invite":
+        from api.userauth_routes import handle_post_invite, _read_form_or_json
+        from urllib.parse import parse_qs
+        _body = _read_form_or_json(handler)
+        q = parse_qs(parsed.query) if parsed.query else {}
+        return handle_post_invite(handler, _body, q)
+
+    if parsed.path == "/auth/accept-invite":
+        from api.userauth_routes import handle_post_accept_invite, _read_form_or_json
+        _body = _read_form_or_json(handler)
+        return handle_post_accept_invite(handler, _body)
+    # ───────────────────────────────────────────────────────────────────────
 
     if parsed.path == "/api/upload":
         return handle_upload(handler)
@@ -6892,6 +6949,20 @@ def handle_delete(handler, parsed) -> bool:
     if not _check_csrf(handler):
         return j(handler, {"error": _csrf_rejection_error(handler)}, status=403)
     body = read_body(handler)
+
+    # ── Per-user auth delete endpoints ──────────────────────────────────────
+    if parsed.path.startswith("/users/invite/"):
+        invite_id = parsed.path[len("/users/invite/"):]
+        from api.userauth_routes import handle_delete_invite
+        return handle_delete_invite(handler, invite_id)
+
+    if parsed.path.startswith("/users/"):
+        user_id = parsed.path[len("/users/"):]
+        if user_id and "/" not in user_id:
+            from api.userauth_routes import handle_delete_user
+            return handle_delete_user(handler, user_id)
+    # ────────────────────────────────────────────────────────────────────────
+
     if parsed.path.startswith("/api/mcp/servers/"):
         name = parsed.path[len("/api/mcp/servers/"):]
         return _handle_mcp_server_delete(handler, name)

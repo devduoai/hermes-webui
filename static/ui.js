@@ -8836,3 +8836,257 @@ async function uploadPendingFiles(){
   if(extracted.length)showToast(t('archive_extracted',extracted.reduce((s,n)=>s+n.extracted,0),extracted.length));
   return names;
 }
+
+// ── Users panel ──────────────────────────────────────────────────────────────
+// State for the users panel (current user + data).
+let _usersCurrentUser = null;
+let _usersPanelLoaded = false;
+
+async function loadUsersPanel(force) {
+  if (_usersPanelLoaded && !force) return;
+  _usersPanelLoaded = true;
+
+  const container = $('usersTableContainer');
+  const inviteBlock = $('usersInviteBlock');
+  const pendingBlock = $('usersPendingInvitesBlock');
+  const usersBtn = $('settingsMenuUsersBtn');
+
+  if (container) container.innerHTML = '<span style="color:var(--muted);font-size:12px">Loading...</span>';
+
+  let data;
+  try {
+    const res = await fetch('api/users', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        if (usersBtn) usersBtn.style.display = 'none';
+        if (container) container.innerHTML = '<span style="color:var(--muted);font-size:12px">Not authorized.</span>';
+        return;
+      }
+      throw new Error('HTTP ' + res.status);
+    }
+    data = await res.json();
+  } catch (e) {
+    if (container) container.innerHTML = '<span style="color:#e87070;font-size:12px">Failed to load users: ' + (e.message || e) + '</span>';
+    return;
+  }
+
+  // Determine current user (from /auth/me if not cached)
+  if (!_usersCurrentUser) {
+    try {
+      const meRes = await fetch('auth/me', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if (meRes.ok) {
+        const me = await meRes.json();
+        _usersCurrentUser = me.user || null;
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  const currentUser = _usersCurrentUser;
+  const isOwner = currentUser && currentUser.role === 'owner';
+  const users = data.users || [];
+  const invites = data.invites || [];
+
+  // Render user table
+  if (container) {
+    if (!users.length) {
+      container.innerHTML = '<span style="color:var(--muted);font-size:12px">No users found.</span>';
+    } else {
+      let rows = users.map(u => {
+        const lastLogin = u.last_login_at
+          ? new Date(u.last_login_at * 1000).toLocaleDateString()
+          : 'Never';
+        const badge = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;background:${u.role==='owner'?'#302060':'#103030'};color:${u.role==='owner'?'#c090f8':'#60d0a0'}">${u.role}</span>`;
+        const isCurrentUser = currentUser && u.id === currentUser.id;
+        const delBtn = (isOwner && !isCurrentUser)
+          ? `<button class="sm-btn" onclick="usersDeleteUser('${u.id}','${u.email.replace(/'/g,"\\'")}',this)" style="padding:3px 8px;font-size:11px;color:#e87070;border-color:rgba(232,112,112,.3)">Delete</button>`
+          : '';
+        return `<tr>
+          <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);color:var(--text)">${u.email}${isCurrentUser?'<span style="margin-left:6px;font-size:10px;color:var(--muted)">(you)</span>':''}</td>
+          <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border)">${badge}</td>
+          <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);color:var(--muted)">${lastLogin}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${delBtn}</td>
+        </tr>`;
+      }).join('');
+      container.innerHTML = `<table style="width:100%;border-collapse:collapse">
+        <thead><tr>
+          <th style="padding:4px 8px;font-size:11px;color:var(--muted);text-align:left;text-transform:uppercase;border-bottom:1px solid var(--border2)">Email</th>
+          <th style="padding:4px 8px;font-size:11px;color:var(--muted);text-align:left;text-transform:uppercase;border-bottom:1px solid var(--border2)">Role</th>
+          <th style="padding:4px 8px;font-size:11px;color:var(--muted);text-align:left;text-transform:uppercase;border-bottom:1px solid var(--border2)">Last Login</th>
+          <th style="padding:4px 8px;border-bottom:1px solid var(--border2)"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+  }
+
+  // Update invite role dropdown (owners can invite owner or admin; admins only admin)
+  const roleSelect = $('usersInviteRole');
+  if (roleSelect) {
+    if (isOwner) {
+      roleSelect.innerHTML = '<option value="owner">Owner</option><option value="admin" selected>Admin</option>';
+    } else {
+      roleSelect.innerHTML = '<option value="admin">Admin</option>';
+    }
+  }
+
+  // Show/hide invite block (all authenticated users can invite)
+  if (inviteBlock) inviteBlock.style.display = currentUser ? '' : 'none';
+
+  // Render pending invites
+  if (pendingBlock && invites.length > 0) {
+    pendingBlock.style.display = '';
+    const invTable = $('usersPendingInvitesTable');
+    if (invTable) {
+      let invRows = invites.map(inv => {
+        const exp = inv.expires_at ? new Date(inv.expires_at * 1000).toLocaleDateString() : '—';
+        const badge = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;background:${inv.role==='owner'?'#302060':'#103030'};color:${inv.role==='owner'?'#c090f8':'#60d0a0'}">${inv.role}</span>`;
+        const canRevoke = isOwner || (currentUser && inv.created_by === currentUser.id);
+        const revokeBtn = canRevoke
+          ? `<button class="sm-btn" onclick="usersRevokeInvite('${inv.id}','${inv.email.replace(/'/g,"\\'")}',this)" style="padding:3px 8px;font-size:11px;color:#e87070;border-color:rgba(232,112,112,.3)">Revoke</button>`
+          : '';
+        return `<tr>
+          <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);color:var(--text)">${inv.email}</td>
+          <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border)">${badge}</td>
+          <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);color:var(--muted)">${exp}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${revokeBtn}</td>
+        </tr>`;
+      }).join('');
+      invTable.innerHTML = `<table style="width:100%;border-collapse:collapse">
+        <thead><tr>
+          <th style="padding:4px 8px;font-size:11px;color:var(--muted);text-align:left;text-transform:uppercase;border-bottom:1px solid var(--border2)">Email</th>
+          <th style="padding:4px 8px;font-size:11px;color:var(--muted);text-align:left;text-transform:uppercase;border-bottom:1px solid var(--border2)">Role</th>
+          <th style="padding:4px 8px;font-size:11px;color:var(--muted);text-align:left;text-transform:uppercase;border-bottom:1px solid var(--border2)">Expires</th>
+          <th style="padding:4px 8px;border-bottom:1px solid var(--border2)"></th>
+        </tr></thead>
+        <tbody>${invRows}</tbody>
+      </table>`;
+    }
+  } else if (pendingBlock) {
+    pendingBlock.style.display = 'none';
+  }
+}
+
+async function usersInvite() {
+  const emailEl = $('usersInviteEmail');
+  const roleEl = $('usersInviteRole');
+  const resultEl = $('usersInviteResult');
+  const btn = $('btnUsersInvite');
+  if (!emailEl || !roleEl) return;
+
+  const email = (emailEl.value || '').trim();
+  const role = roleEl.value;
+  if (!email) { emailEl.focus(); return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending\u2026'; }
+  if (resultEl) { resultEl.style.display = 'none'; resultEl.innerHTML = ''; }
+
+  try {
+    const res = await fetch('users/invite', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ email, role }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      if (resultEl) {
+        resultEl.style.display = '';
+        resultEl.innerHTML = `<div style="padding:8px 10px;background:var(--code-bg);border:1px solid #5a2020;border-radius:6px;font-size:12px;color:#e87070">${data.error || 'Invite failed'}</div>`;
+      }
+    } else {
+      const url = data.invite_url || '';
+      if (resultEl) {
+        resultEl.style.display = '';
+        resultEl.innerHTML = `<div style="padding:8px 10px;background:var(--code-bg);border:1px solid var(--border2);border-radius:6px;font-size:12px">
+          <div style="color:var(--muted);margin-bottom:4px">Invite link (share with ${email}):</div>
+          <div style="word-break:break-all;color:var(--text);font-family:monospace;font-size:11px">${url}</div>
+          <button class="sm-btn" onclick="navigator.clipboard.writeText(${JSON.stringify(url)}).then(()=>{this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy link'},2000)})" style="margin-top:6px;padding:3px 10px;font-size:11px">Copy link</button>
+        </div>`;
+      }
+      emailEl.value = '';
+      // Reload to show updated invites list
+      _usersPanelLoaded = false;
+      await loadUsersPanel(true);
+    }
+  } catch (e) {
+    if (resultEl) {
+      resultEl.style.display = '';
+      resultEl.innerHTML = `<div style="padding:8px 10px;background:var(--code-bg);border:1px solid #5a2020;border-radius:6px;font-size:12px;color:#e87070">Error: ${e.message}</div>`;
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = t('settings_users_invite_btn') || 'Send Invite'; }
+  }
+}
+
+async function usersDeleteUser(userId, email, btnEl) {
+  if (!confirm('Delete user ' + email + '? This cannot be undone.')) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Deleting\u2026'; }
+  try {
+    const res = await fetch('users/' + encodeURIComponent(userId), {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    });
+    const data = await res.json();
+    if (data.ok) {
+      _usersPanelLoaded = false;
+      await loadUsersPanel(true);
+    } else {
+      alert(data.error || 'Delete failed');
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Delete'; }
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Delete'; }
+  }
+}
+
+async function usersRevokeInvite(inviteId, email, btnEl) {
+  if (!confirm('Revoke invite for ' + email + '?')) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Revoking\u2026'; }
+  try {
+    const res = await fetch('users/invite/' + encodeURIComponent(inviteId), {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    });
+    const data = await res.json();
+    if (data.ok) {
+      _usersPanelLoaded = false;
+      await loadUsersPanel(true);
+    } else {
+      alert(data.error || 'Revoke failed');
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Revoke'; }
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Revoke'; }
+  }
+}
+
+// Show/hide the Users nav item based on auth/me response.
+// Called after settings panel opens (or on DOMContentLoaded if already authed).
+async function _initUsersNavVisibility() {
+  const btn = $('settingsMenuUsersBtn');
+  if (!btn) return;
+  try {
+    const res = await fetch('auth/me', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    if (!res.ok) { btn.style.display = 'none'; return; }
+    const data = await res.json();
+    _usersCurrentUser = data.user || null;
+    if (_usersCurrentUser) {
+      btn.style.display = '';
+    } else {
+      btn.style.display = 'none';
+    }
+  } catch (e) {
+    btn.style.display = 'none';
+  }
+}
+
+// Call once the page has loaded.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _initUsersNavVisibility);
+} else {
+  _initUsersNavVisibility();
+}
