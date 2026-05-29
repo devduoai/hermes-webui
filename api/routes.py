@@ -5187,6 +5187,17 @@ def handle_post(handler, parsed) -> bool:
         from api.userauth_routes import handle_post_accept_invite, _read_form_or_json
         _body = _read_form_or_json(handler)
         return handle_post_accept_invite(handler, _body)
+
+    if parsed.path == "/auth/change-password":
+        from api.userauth_routes import handle_post_change_password, _read_form_or_json
+        _body = _read_form_or_json(handler)
+        return handle_post_change_password(handler, _body)
+
+    if parsed.path.startswith("/api/users/") and parsed.path.endswith("/reset-password"):
+        _uid = parsed.path[len("/api/users/"):-len("/reset-password")]
+        if _uid:
+            from api.userauth_routes import handle_post_reset_password
+            return handle_post_reset_password(handler, _uid)
     # ───────────────────────────────────────────────────────────────────────
 
     if parsed.path == "/api/upload":

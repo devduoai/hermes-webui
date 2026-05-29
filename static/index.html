@@ -370,6 +370,10 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           <span data-i18n="settings_tab_users">Users</span>
         </button>
+        <button type="button" class="side-menu-item" id="settingsMenuAccountBtn" data-settings-section="account" onclick="switchSettingsSection('account')" style="display:none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+          <span>Account</span>
+        </button>
       </div>
     </div>
   <div class="resize-handle" id="sidebarResize"></div>
@@ -1344,6 +1348,26 @@
             <div class="settings-field" id="usersPendingInvitesBlock" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
               <label data-i18n="settings_users_pending_label">Pending Invites</label>
               <div id="usersPendingInvitesTable" style="margin-top:6px"></div>
+            </div>
+          </div>
+          <div class="settings-pane" id="settingsPaneAccount">
+            <div class="settings-section-head">
+              <div>
+                <div class="settings-section-title">Account</div>
+                <div class="settings-section-meta">Update your password and account security settings.</div>
+              </div>
+            </div>
+            <!-- Change password form -->
+            <div class="settings-field" id="accountChangePwBlock">
+              <label style="font-size:13px;font-weight:600;color:var(--text)">Change Password</label>
+              <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px;max-width:400px">
+                <input type="password" id="accountCurrentPw" placeholder="Current password" autocomplete="current-password" style="padding:8px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:13px">
+                <input type="password" id="accountNewPw" placeholder="New password (min 12 chars, letter + digit)" autocomplete="new-password" style="padding:8px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:13px">
+                <input type="password" id="accountConfirmPw" placeholder="Confirm new password" autocomplete="new-password" style="padding:8px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:13px">
+                <div style="font-size:11px;color:var(--muted)">At least 12 characters with at least one letter and one digit.</div>
+                <button class="sm-btn" id="btnAccountChangePw" onclick="accountChangePassword()" style="padding:8px 14px;font-weight:600;width:fit-content">Update Password</button>
+                <div id="accountChangePwResult" style="display:none;margin-top:4px;font-size:12px"></div>
+              </div>
             </div>
           </div>
       </div>

@@ -725,6 +725,61 @@ def handle_delete_invite(handler, invite_id: str) -> bool:
     return _json_response(handler, {"ok": True})
 
 
+def handle_post_change_password(handler, body: dict) -> bool:
+    """POST /auth/change-password — change the current user's password."""
+    from api.userauth import change_password
+
+    current = _get_current_user(handler)
+    if not current:
+        return _json_response(handler, {"error": "Authentication required"}, status=401)
+
+    current_password = body.get("current_password") or ""
+    new_password = body.get("new_password") or ""
+
+    if not current_password or not new_password:
+        return _json_response(handler, {"error": "current_password and new_password are required."}, status=400)
+
+    # Get the current session token to keep alive
+    keep_token = _parse_user_session_cookie(handler) or ""
+
+    try:
+        change_password(current["id"], current_password, new_password, keep_token)
+    except ValueError as e:
+        msg = str(e)
+        if msg == "current_password":
+            return _json_response(handler, {"error": "Current password is incorrect."}, status=401)
+        return _json_response(handler, {"error": msg}, status=400)
+    except KeyError:
+        return _json_response(handler, {"error": "User not found."}, status=404)
+
+    return _json_response(handler, {"ok": True})
+
+
+def handle_post_reset_password(handler, user_id: str) -> bool:
+    """POST /api/users/<id>/reset-password — Owner-only: generate a temp password."""
+    from api.userauth import reset_user_password
+
+    current = _get_current_user(handler)
+    if not current:
+        return _json_response(handler, {"error": "Authentication required"}, status=401)
+
+    if current["role"] != "owner":
+        return _json_response(handler, {"error": "Owner role required."}, status=403)
+
+    # Owners cannot reset their own password via this endpoint (use change-password)
+    if current["id"] == user_id:
+        return _json_response(handler, {"error": "Use the change-password form to update your own password."}, status=400)
+
+    try:
+        result = reset_user_password(user_id, current["role"])
+    except PermissionError as e:
+        return _json_response(handler, {"error": str(e)}, status=403)
+    except KeyError:
+        return _json_response(handler, {"error": "User not found."}, status=404)
+
+    return _json_response(handler, {"ok": True, "temp_password": result["temp_password"], "expires_at": result["expires_at"]})
+
+
 # ── Utility ───────────────────────────────────────────────────────────────────
 
 def _error_page(message: str) -> str:

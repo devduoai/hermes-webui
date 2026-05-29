@@ -306,6 +306,91 @@ def delete_other_sessions(user_id: str, keep_token: str) -> None:
         con.commit()
 
 
+def delete_all_sessions(user_id: str) -> None:
+    """Invalidate ALL sessions for user_id (for owner-driven reset)."""
+    with _conn() as con:
+        con.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        con.commit()
+
+
+def change_password(user_id: str, current_password: str, new_password: str, keep_token: str) -> None:
+    """
+    Change a user's password.
+
+    Verifies current_password against the stored hash, validates new_password
+    against policy, updates the hash, and invalidates all sessions except
+    keep_token (the caller's current session).
+
+    Raises:
+        ValueError("current_password"): current password is wrong.
+        ValueError(<policy message>): new password fails policy.
+        KeyError: user not found.
+    """
+    err = validate_password(new_password)
+    if err:
+        raise ValueError(err)
+    with _conn() as con:
+        row = con.execute(
+            "SELECT id, password_hash FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+        if not row:
+            raise KeyError(f"User {user_id!r} not found.")
+        if not verify_password_hash(current_password, row["password_hash"]):
+            raise ValueError("current_password")
+        new_hash = hash_password(new_password)
+        con.execute(
+            "UPDATE users SET password_hash=? WHERE id=?",
+            (new_hash, user_id),
+        )
+        con.execute(
+            "DELETE FROM sessions WHERE user_id=? AND id!=?",
+            (user_id, keep_token),
+        )
+        con.commit()
+
+
+# Characters that are unambiguous for temp passwords (no 0/O/1/l/I)
+_TEMP_PW_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
+_TEMP_PW_LEN = 16
+
+
+def generate_temp_password() -> str:
+    """Generate a 16-char alphanumeric temp password without ambiguous characters."""
+    return "".join(secrets.choice(_TEMP_PW_CHARS) for _ in range(_TEMP_PW_LEN))
+
+
+def reset_user_password(target_user_id: str, acting_user_role: str) -> dict:
+    """
+    Owner-only: generate a temp password for target_user_id, update their hash,
+    wipe all their sessions, and return {temp_password, expires_at}.
+
+    The temp password is valid for 24 hours (caller must share it out-of-band).
+    Raises:
+        PermissionError: acting_user_role is not 'owner'.
+        KeyError: target_user_id not found.
+    """
+    if acting_user_role != "owner":
+        raise PermissionError("Owner role required to reset passwords.")
+    temp_pw = generate_temp_password()
+    new_hash = hash_password(temp_pw)
+    expires_at = int(time.time()) + 86400  # 24 hours
+    with _conn() as con:
+        row = con.execute("SELECT id FROM users WHERE id=?", (target_user_id,)).fetchone()
+        if not row:
+            raise KeyError(f"User {target_user_id!r} not found.")
+        con.execute(
+            "UPDATE users SET password_hash=? WHERE id=?",
+            (new_hash, target_user_id),
+        )
+        con.execute("DELETE FROM sessions WHERE user_id=?", (target_user_id,))
+        con.commit()
+    logger.info(
+        "Password reset by owner for user_id=%s (temp pw NOT logged)",
+        target_user_id,
+    )
+    return {"temp_password": temp_pw, "expires_at": expires_at}
+
+
 # ── Invite management ─────────────────────────────────────────────────────────
 
 def create_invite(email: str, role: str, created_by: str) -> dict:

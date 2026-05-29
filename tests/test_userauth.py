@@ -337,3 +337,119 @@ class TestIsUserauthActive:
         monkeypatch.setenv("HERMES_USERAUTH", "1")
         ua = _ua()
         assert ua.is_userauth_active() is True
+
+
+class TestChangePassword:
+    def _setup(self):
+        ua = _ua()
+        owner = ua.create_user("owner@example.com", "ValidPassword1", "owner")
+        token = ua.create_session(owner["id"])
+        return ua, owner, token
+
+    def test_change_password_success(self):
+        ua, owner, token = self._setup()
+        ua.change_password(owner["id"], "ValidPassword1", "NewPassword99", token)
+        # Old password should no longer work
+        assert ua.attempt_login("owner@example.com", "ValidPassword1") is None
+        # New password works
+        assert ua.attempt_login("owner@example.com", "NewPassword99") is not None
+
+    def test_change_password_keeps_current_session(self):
+        ua, owner, token = self._setup()
+        # Create a second session to verify it gets deleted
+        token2 = ua.create_session(owner["id"])
+        ua.change_password(owner["id"], "ValidPassword1", "NewPassword99", token)
+        # Current session still valid
+        assert ua.get_session_user(token) is not None
+        # Other session wiped
+        assert ua.get_session_user(token2) is None
+
+    def test_change_password_wrong_current(self):
+        ua, owner, token = self._setup()
+        import pytest
+        with pytest.raises(ValueError) as exc_info:
+            ua.change_password(owner["id"], "WrongPassword1", "NewPassword99", token)
+        assert str(exc_info.value) == "current_password"
+
+    def test_change_password_policy_violation(self):
+        ua, owner, token = self._setup()
+        import pytest
+        with pytest.raises(ValueError) as exc_info:
+            ua.change_password(owner["id"], "ValidPassword1", "short", token)
+        assert "12" in str(exc_info.value)
+
+    def test_change_password_no_digit(self):
+        ua, owner, token = self._setup()
+        import pytest
+        with pytest.raises(ValueError) as exc_info:
+            ua.change_password(owner["id"], "ValidPassword1", "passwordpassword", token)
+        assert "digit" in str(exc_info.value)
+
+    def test_change_password_hash_actually_updated(self):
+        ua, owner, token = self._setup()
+        old_hash = ua.get_user_by_id(owner["id"])["password_hash"]
+        ua.change_password(owner["id"], "ValidPassword1", "NewPassword99", token)
+        new_hash = ua.get_user_by_id(owner["id"])["password_hash"]
+        assert old_hash != new_hash
+        assert ua.verify_password_hash("NewPassword99", new_hash)
+
+
+class TestResetUserPassword:
+    def _setup(self):
+        ua = _ua()
+        owner = ua.create_user("owner@example.com", "ValidPassword1", "owner")
+        admin = ua.create_user("admin@example.com", "ValidPassword1", "admin")
+        return ua, owner, admin
+
+    def test_owner_can_reset(self):
+        ua, owner, admin = self._setup()
+        result = ua.reset_user_password(admin["id"], "owner")
+        assert "temp_password" in result
+        assert "expires_at" in result
+        temp_pw = result["temp_password"]
+        assert len(temp_pw) == 16
+        # Admin can log in with temp password
+        assert ua.attempt_login("admin@example.com", temp_pw) is not None
+        # Old password no longer works
+        assert ua.attempt_login("admin@example.com", "ValidPassword1") is None
+
+    def test_reset_wipes_target_sessions(self):
+        ua, owner, admin = self._setup()
+        admin_token = ua.create_session(admin["id"])
+        ua.reset_user_password(admin["id"], "owner")
+        # Admin's sessions wiped
+        assert ua.get_session_user(admin_token) is None
+
+    def test_admin_cannot_reset(self):
+        ua, owner, admin = self._setup()
+        import pytest
+        with pytest.raises(PermissionError):
+            ua.reset_user_password(owner["id"], "admin")
+
+    def test_reset_nonexistent_user_raises(self):
+        ua, owner, admin = self._setup()
+        import pytest
+        with pytest.raises(KeyError):
+            ua.reset_user_password("nonexistent-uuid", "owner")
+
+    def test_temp_password_is_unambiguous(self):
+        ua, owner, admin = self._setup()
+        result = ua.reset_user_password(admin["id"], "owner")
+        temp_pw = result["temp_password"]
+        # None of the ambiguous characters: 0, O, 1, l, I
+        for ch in "0O1lI":
+            assert ch not in temp_pw, f"Ambiguous char {ch!r} found in temp password"
+
+    def test_generate_temp_password_length(self):
+        ua = _ua()
+        pw = ua.generate_temp_password()
+        assert len(pw) == 16
+
+    def test_expires_at_is_roughly_24h(self):
+        import time
+        ua, owner, admin = self._setup()
+        before = int(time.time())
+        result = ua.reset_user_password(admin["id"], "owner")
+        after = int(time.time())
+        assert result["expires_at"] >= before + 86399
+        assert result["expires_at"] <= after + 86401
