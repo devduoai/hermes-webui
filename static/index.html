@@ -366,6 +366,10 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><line x1="6" y1="7" x2="6.01" y2="7"/><line x1="6" y1="17" x2="6.01" y2="17"/></svg>
           <span data-i18n="settings_tab_system">System</span>
         </button>
+        <button type="button" class="side-menu-item" id="settingsMenuUsersBtn" data-settings-section="users" onclick="switchSettingsSection('users')" style="display:none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span data-i18n="settings_tab_users">Users</span>
+        </button>
       </div>
     </div>
   <div class="resize-handle" id="sidebarResize"></div>
@@ -1311,6 +1315,36 @@
               <div class="mcp-restart-hint" data-i18n="mcp_tools_runtime_note">Tool inventory only uses already-known active MCP runtime data; the WebUI does not start or probe servers.</div>
             </div>
             <button class="sm-btn" onclick="saveSettings()" style="margin-top:12px;width:100%;padding:8px;font-weight:600" data-i18n="settings_save_btn">Save Settings</button>
+          </div>
+          <div class="settings-pane" id="settingsPaneUsers">
+            <div class="settings-section-head">
+              <div>
+                <div class="settings-section-title" data-i18n="settings_section_users_title">Users</div>
+                <div class="settings-section-meta" data-i18n="settings_section_users_meta">Manage team members and invite new users.</div>
+              </div>
+            </div>
+            <!-- User list -->
+            <div class="settings-field" id="usersListBlock">
+              <label data-i18n="settings_users_list_label">Team Members</label>
+              <div id="usersTableContainer" style="margin-top:6px;font-size:13px;color:var(--muted)">Loading...</div>
+            </div>
+            <!-- Invite form -->
+            <div class="settings-field" style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)" id="usersInviteBlock">
+              <label data-i18n="settings_users_invite_label">Invite User</label>
+              <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
+                <input type="email" id="usersInviteEmail" placeholder="email@example.com" style="flex:1;min-width:160px;padding:8px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:13px">
+                <select id="usersInviteRole" style="padding:8px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:13px">
+                  <option value="admin">Admin</option>
+                </select>
+                <button class="sm-btn" id="btnUsersInvite" onclick="usersInvite()" style="padding:8px 14px;font-weight:600" data-i18n="settings_users_invite_btn">Send Invite</button>
+              </div>
+              <div id="usersInviteResult" style="display:none;margin-top:10px"></div>
+            </div>
+            <!-- Pending invites -->
+            <div class="settings-field" id="usersPendingInvitesBlock" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+              <label data-i18n="settings_users_pending_label">Pending Invites</label>
+              <div id="usersPendingInvitesTable" style="margin-top:6px"></div>
+            </div>
           </div>
       </div>
     </div>
