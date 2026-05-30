@@ -117,6 +117,65 @@ function _formatSessionModelWithGateway(s){
   return s.model;
 }
 
+/**
+ * Format a session's created_by object into a human-readable label.
+ * Returns '' when no creator info is present (legacy or no-data sessions).
+ * @param {object|null} createdBy  The session's created_by object (may be null/undefined).
+ * @returns {string}  Display label, e.g. 'tony@example.com', 'Slack: Tony Wong', 'unknown'
+ */
+function _formatCreatorLabel(createdBy){
+  if(!createdBy||typeof createdBy!=='object') return '';
+  const source=createdBy.source||'unknown';
+  const ti=typeof t==='function'?t:null;
+  switch(source){
+    case 'webui': {
+      const email=createdBy.display_name||createdBy.email||createdBy.platform_user_id||'';
+      return email||'';
+    }
+    case 'slack': {
+      const prefix=ti?t('creator_source_slack'):'Slack:';
+      const name=createdBy.display_name||createdBy.platform_user_id||'';
+      return name?(prefix+' '+name):prefix;
+    }
+    case 'kanban': {
+      const suffix=ti?t('creator_source_kanban'):'kanban';
+      const agent=createdBy.agent_identity||createdBy.display_name||'';
+      return agent?(agent+' ('+suffix+')'):(suffix);
+    }
+    case 'cron': {
+      const suffix=ti?t('creator_source_cron'):'cron';
+      const agent=createdBy.agent_identity||createdBy.display_name||createdBy.job_name||'';
+      return agent?(agent+' ('+suffix+')'):(suffix);
+    }
+    case 'api': {
+      const prefix=ti?t('creator_source_api'):'API:';
+      const name=createdBy.display_name||createdBy.platform_user_id||'';
+      return name?(prefix+' '+name):prefix;
+    }
+    case 'unknown':
+    default:
+      return ti?t('creator_source_unknown'):'unknown';
+  }
+}
+
+/**
+ * Build the full tooltip text for a creator badge, showing the full attribution chain.
+ * e.g. 'Slack: Tony Wong → @hermes-orchestrator'
+ */
+function _formatCreatorTooltip(createdBy){
+  if(!createdBy||typeof createdBy!=='object') return '';
+  const label=_formatCreatorLabel(createdBy);
+  if(!label) return '';
+  const parts=[label];
+  if(createdBy.agent_identity&&!['kanban','cron'].includes(createdBy.source)){
+    parts.push('@'+createdBy.agent_identity);
+  }
+  if(createdBy.platform_user_id&&createdBy.source==='slack'){
+    parts.push('(uid:'+createdBy.platform_user_id+')');
+  }
+  return parts.join(' \u2192 ');
+}
+
 function _getSessionViewedCounts() {
   if (_sessionViewedCounts !== null) return _sessionViewedCounts;
   try {
@@ -3729,6 +3788,17 @@ function renderSessionListFromCache(){
     }
     titleRow.appendChild(ts);
     sessionText.appendChild(titleRow);
+    // ── Session creator attribution label ──────────────────────────────────
+    const _createdBy=s.created_by&&typeof s.created_by==='object'?s.created_by:null;
+    const _creatorLabel=_createdBy?_formatCreatorLabel(_createdBy):'';
+    if(_creatorLabel){
+      const creatorEl=document.createElement('div');
+      creatorEl.className='session-creator-label'+(_createdBy.source==='unknown'?' session-creator-label--unknown':'');
+      creatorEl.textContent=_creatorLabel;
+      const tooltip=_formatCreatorTooltip(_createdBy);
+      if(tooltip) creatorEl.title=tooltip;
+      sessionText.appendChild(creatorEl);
+    }
     if(density==='detailed'){
       const metaBits=[];
       const msgCount=typeof s.message_count==='number'?s.message_count:0;
