@@ -8900,6 +8900,9 @@ async function loadUsersPanel(force) {
         const resetBtn = (isOwner && !isCurrentUser)
           ? `<button class="sm-btn" onclick="usersResetPassword('${u.id}','${u.email.replace(/'/g,"\\'")}',this)" style="padding:3px 8px;font-size:11px;color:#70a8e8;border-color:rgba(112,168,232,.3);margin-right:4px">Reset pw</button>`
           : '';
+        const unlockBtn = (isOwner && !isCurrentUser)
+          ? `<button class="sm-btn" onclick="usersUnlockLogin('${u.id}','${u.email.replace(/'/g,"\\'")}',this)" style="padding:3px 8px;font-size:11px;color:#a8d08d;border-color:rgba(168,208,141,.3);margin-right:4px" title="Clear login rate-limit lockout">Unlock</button>`
+          : '';
         const delBtn = (isOwner && !isCurrentUser)
           ? `<button class="sm-btn" onclick="usersDeleteUser('${u.id}','${u.email.replace(/'/g,"\\'")}',this)" style="padding:3px 8px;font-size:11px;color:#e87070;border-color:rgba(232,112,112,.3)">Delete</button>`
           : '';
@@ -8907,7 +8910,7 @@ async function loadUsersPanel(force) {
           <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);color:var(--text)">${u.email}${isCurrentUser?'<span style="margin-left:6px;font-size:10px;color:var(--muted)">(you)</span>':''}</td>
           <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border)">${badge}</td>
           <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);color:var(--muted)">${lastLogin}</td>
-          <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${resetBtn}${delBtn}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${resetBtn}${unlockBtn}${delBtn}</td>
         </tr>`;
       }).join('');
       container.innerHTML = `<table style="width:100%;border-collapse:collapse">
@@ -9166,6 +9169,30 @@ async function accountChangePassword() {
     showResult('Error: ' + (e.message || e), true);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
+  }
+}
+
+async function usersUnlockLogin(userId, email, btnEl) {
+  if (!confirm('Clear login lockout for ' + email + '? This lets them attempt to log in again immediately.')) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Unlocking\u2026'; }
+
+  try {
+    const res = await fetch('api/users/' + encodeURIComponent(userId) + '/unlock-login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      alert(data.error || 'Unlock failed.');
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Unlock'; }
+    } else {
+      if (btnEl) { btnEl.textContent = 'Unlocked \u2713'; setTimeout(() => { if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Unlock'; } }, 2000); }
+    }
+  } catch (e) {
+    alert('Error: ' + (e.message || e));
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Unlock'; }
   }
 }
 

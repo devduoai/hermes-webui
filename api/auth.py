@@ -1,7 +1,18 @@
 """
 Hermes Web UI -- optional authentication.
-Off by default. Enable by setting HERMES_WEBUI_PASSWORD, configuring a
-password in Settings, or registering passkeys and then going passwordless.
+
+DEPRECATED: The shared-password auth path (HERMES_WEBUI_PASSWORD /
+settings.json password_hash) is superseded by per-user auth (api/userauth.py).
+When HERMES_USERAUTH is active (auth.db exists), the password-based path
+here is never reached. Only the passkey path and session helpers remain in
+active use.
+
+WAL CHECKPOINT WARNING: auth.db uses SQLite WAL mode. Any out-of-process
+write to auth.db (e.g. via ``docker exec python3`` or ``sqlite3`` CLI) MUST
+run ``PRAGMA wal_checkpoint(TRUNCATE)`` after committing, or the write will
+be silently rolled back the next time the live webui process checkpoints its
+WAL. Use the in-app endpoints (/auth/change-password, /api/users/<id>/reset-password)
+which share the server's connection pool and avoid this issue entirely.
 """
 import hashlib
 import hmac

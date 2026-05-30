@@ -187,13 +187,13 @@ class TestLogin:
     def test_wrong_password(self):
         ua = _ua()
         ua.create_user("login@example.com", "ValidPassword1", "owner")
-        result = ua.attempt_login("login@example.com", "WrongPassword1")
-        assert result is None
+        with pytest.raises(ValueError):
+            ua.attempt_login("login@example.com", "WrongPassword1")
 
     def test_nonexistent_user(self):
         ua = _ua()
-        result = ua.attempt_login("noone@example.com", "ValidPassword1")
-        assert result is None
+        with pytest.raises(ValueError):
+            ua.attempt_login("noone@example.com", "ValidPassword1")
 
     def test_case_insensitive_email(self):
         ua = _ua()
@@ -301,14 +301,16 @@ class TestInvites:
 class TestRateLimit:
     def test_initial_not_limited(self):
         ua = _ua()
-        assert ua.check_login_rate("ratetest@example.com") is True
+        # Should not raise — no attempts recorded
+        ua.check_login_rate("ratetest@example.com")
 
     def test_limited_after_max_attempts(self):
         ua = _ua()
         email = "ratetest2@example.com"
         for _ in range(5):
             ua.record_login_failure(email)
-        assert ua.check_login_rate(email) is False
+        with pytest.raises(ua.RateLimitedError):
+            ua.check_login_rate(email)
 
     def test_cleared_after_success(self):
         ua = _ua()
@@ -316,7 +318,35 @@ class TestRateLimit:
         for _ in range(4):
             ua.record_login_failure(email)
         ua.clear_login_attempts(email)
-        assert ua.check_login_rate(email) is True
+        # Should not raise after clearing
+        ua.check_login_rate(email)
+
+    def test_rate_limited_error_has_retry_after(self):
+        ua = _ua()
+        email = "ratetest4@example.com"
+        for _ in range(10):
+            ua.record_login_failure(email)
+        with pytest.raises(ua.RateLimitedError) as exc_info:
+            ua.check_login_rate(email)
+        assert exc_info.value.retry_after > 0
+
+    def test_unlock_clears_lockout(self):
+        ua = _ua()
+        email = "ratetest5@example.com"
+        for _ in range(5):
+            ua.record_login_failure(email)
+        ua.unlock_login_attempts(email)
+        # Should not raise after unlock
+        ua.check_login_rate(email)
+
+    def test_per_ip_rate_limit(self):
+        ua = _ua()
+        email = "ratetest6@example.com"
+        ip = "1.2.3.4"
+        for _ in range(5):
+            ua.record_login_failure(email, ip)
+        with pytest.raises(ua.RateLimitedError):
+            ua.check_login_rate(email, ip)
 
 
 class TestIsUserauthActive:
@@ -350,7 +380,8 @@ class TestChangePassword:
         ua, owner, token = self._setup()
         ua.change_password(owner["id"], "ValidPassword1", "NewPassword99", token)
         # Old password should no longer work
-        assert ua.attempt_login("owner@example.com", "ValidPassword1") is None
+        with pytest.raises(ValueError):
+            ua.attempt_login("owner@example.com", "ValidPassword1")
         # New password works
         assert ua.attempt_login("owner@example.com", "NewPassword99") is not None
 
@@ -411,7 +442,8 @@ class TestResetUserPassword:
         # Admin can log in with temp password
         assert ua.attempt_login("admin@example.com", temp_pw) is not None
         # Old password no longer works
-        assert ua.attempt_login("admin@example.com", "ValidPassword1") is None
+        with pytest.raises(ValueError):
+            ua.attempt_login("admin@example.com", "ValidPassword1")
 
     def test_reset_wipes_target_sessions(self):
         ua, owner, admin = self._setup()

@@ -137,7 +137,9 @@ class TestChangePasswordRoute:
         handle_post_change_password(h, json.loads(h.rfile.getvalue()))
         assert h._status == 200
         # Old password must not work
-        assert ua.attempt_login("owner@example.com", "ValidPassword1") is None
+        import pytest
+        with pytest.raises(ValueError):
+            ua.attempt_login("owner@example.com", "ValidPassword1")
         # New password works
         assert ua.attempt_login("owner@example.com", "NewPassword99") is not None
 
@@ -197,7 +199,9 @@ class TestResetPasswordRoute:
         temp_pw = h.response_json()["temp_password"]
         assert ua.attempt_login("admin@example.com", temp_pw) is not None
         # Old password no longer works
-        assert ua.attempt_login("admin@example.com", "ValidPassword1") is None
+        import pytest
+        with pytest.raises(ValueError):
+            ua.attempt_login("admin@example.com", "ValidPassword1")
 
     def test_target_sessions_wiped(self):
         from api.userauth_routes import handle_post_reset_password
@@ -234,3 +238,80 @@ class TestResetPasswordRoute:
         h = _make_handler(owner_token, {})
         handle_post_reset_password(h, "nonexistent-uuid-xxxx")
         assert h._status == 404
+
+
+# ── POST /api/users/<id>/unlock-login ────────────────────────────────────────
+
+class TestUnlockLoginRoute:
+    def test_owner_can_unlock(self):
+        from api.userauth_routes import handle_post_unlock_login
+        from api.userauth import record_login_failure, RateLimitedError, check_login_rate
+        import pytest
+        ua, owner, admin, owner_token, admin_token = _setup_users()
+
+        # Trigger lockout for admin
+        for _ in range(5):
+            record_login_failure(admin["email"])
+        with pytest.raises(RateLimitedError):
+            check_login_rate(admin["email"])
+
+        h = _make_handler(owner_token, {})
+        handle_post_unlock_login(h, admin["id"])
+        assert h._status == 200
+        resp = h.response_json()
+        assert resp.get("ok") is True
+        assert resp.get("email") == admin["email"]
+
+        # No longer rate limited
+        check_login_rate(admin["email"])
+
+    def test_admin_cannot_unlock(self):
+        from api.userauth_routes import handle_post_unlock_login
+        ua, owner, admin, owner_token, admin_token = _setup_users()
+
+        h = _make_handler(admin_token, {})
+        handle_post_unlock_login(h, owner["id"])
+        assert h._status == 403
+
+    def test_unauthenticated_401(self):
+        from api.userauth_routes import handle_post_unlock_login
+        ua, owner, admin, owner_token, admin_token = _setup_users()
+
+        h = _make_handler("", {})
+        handle_post_unlock_login(h, admin["id"])
+        assert h._status == 401
+
+    def test_nonexistent_user_404(self):
+        from api.userauth_routes import handle_post_unlock_login
+        ua, owner, admin, owner_token, admin_token = _setup_users()
+
+        h = _make_handler(owner_token, {})
+        handle_post_unlock_login(h, "nonexistent-uuid-xxxx")
+        assert h._status == 404
+
+
+# ── Login route: 429 rate-limit response ─────────────────────────────────────
+
+class TestLoginRateLimitResponse:
+    def test_login_429_when_rate_limited(self):
+        from api.userauth_routes import handle_post_login
+        from api.userauth import record_login_failure
+        ua, owner, admin, owner_token, admin_token = _setup_users()
+
+        # Trigger rate limit for owner email
+        for _ in range(5):
+            record_login_failure(owner["email"])
+
+        h = _make_handler("", {"email": owner["email"], "password": "ValidPassword1"})
+        handle_post_login(h, {"email": owner["email"], "password": "ValidPassword1"}, {})
+        assert h._status == 429
+
+    def test_login_401_on_wrong_password(self):
+        from api.userauth_routes import handle_post_login
+        from api.userauth import clear_login_attempts
+        ua, owner, admin, owner_token, admin_token = _setup_users()
+        clear_login_attempts(owner["email"])
+
+        h = _make_handler("", {"email": owner["email"], "password": "Wrong1Password"})
+        handle_post_login(h, {"email": owner["email"], "password": "Wrong1Password"}, {})
+        assert h._status == 401
