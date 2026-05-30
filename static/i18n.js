@@ -802,6 +802,12 @@ const LOCALES = {
     // 'segment' in the default visible badge. User-facing copy remains
     // translatable for locales that prefer a different wording. (#2155)
     session_meta_segments: (n) => `${n} prior turn${n === 1 ? '' : 's'}`,
+    // Session creator attribution labels
+    creator_source_slack: 'Slack:',
+    creator_source_kanban: 'kanban',
+    creator_source_cron: 'cron',
+    creator_source_unknown: 'unknown',
+    creator_source_api: 'API:',
     session_lineage_segment_untitled: 'Untitled segment',
     session_lineage_segment_open: 'Open lineage segment',
     new_profile: 'New profile',

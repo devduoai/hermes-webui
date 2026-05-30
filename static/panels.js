@@ -85,6 +85,43 @@ function syncAppTitlebar() {
     else { subEl.textContent = ''; subEl.hidden = true; }
   }
 
+  // ── Session creator attribution badge (top-right of titlebar) ─────────────
+  // Rendered as a standalone element so it doesn't collide with subEl copy.
+  let creatorBadgeEl = document.getElementById('appTitlebarCreator');
+  if (panel === 'chat' && typeof S !== 'undefined' && S && S.session && S.session.created_by) {
+    const createdBy = S.session.created_by;
+    const creatorLabel = typeof _formatCreatorLabel === 'function' ? _formatCreatorLabel(createdBy) : '';
+    if (creatorLabel) {
+      if (!creatorBadgeEl) {
+        creatorBadgeEl = document.createElement('span');
+        creatorBadgeEl.id = 'appTitlebarCreator';
+        creatorBadgeEl.className = 'app-titlebar-creator';
+        // Insert to the right of the titlebar-inner, before reload button
+        const titlebarInner = document.querySelector('.app-titlebar-inner');
+        if (titlebarInner && titlebarInner.parentNode) {
+          titlebarInner.parentNode.insertBefore(creatorBadgeEl, titlebarInner.nextSibling);
+        }
+      }
+      creatorBadgeEl.textContent = creatorLabel;
+      creatorBadgeEl.dataset.creatorSource = createdBy.source || '';
+      creatorBadgeEl.dataset.creatorUserId = createdBy.platform_user_id || '';
+      if (typeof _formatCreatorTooltip === 'function') {
+        const tooltip = _formatCreatorTooltip(createdBy);
+        if (tooltip) creatorBadgeEl.title = tooltip;
+      }
+      creatorBadgeEl.hidden = false;
+      if (createdBy.source === 'unknown') {
+        creatorBadgeEl.classList.add('app-titlebar-creator--unknown');
+      } else {
+        creatorBadgeEl.classList.remove('app-titlebar-creator--unknown');
+      }
+    } else if (creatorBadgeEl) {
+      creatorBadgeEl.hidden = true;
+    }
+  } else if (creatorBadgeEl) {
+    creatorBadgeEl.hidden = true;
+  }
+
   // Double-click on the titlebar title → rename the active session (same behaviour
   // as double-clicking a session title in the sidebar).  Only active on the chat
   // panel when a session is open.
