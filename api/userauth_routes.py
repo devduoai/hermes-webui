@@ -25,6 +25,29 @@ import urllib.parse
 
 logger = logging.getLogger(__name__)
 
+
+def _get_client_ip(handler) -> str | None:
+    """Extract the best-effort client IP from a request handler.
+
+    Prefers X-Forwarded-For (set by nginx/Caddy reverse proxy) then
+    X-Real-IP, then falls back to the raw TCP client_address.
+    Returns None if no address can be determined.
+    """
+    try:
+        xff = (handler.headers.get("X-Forwarded-For", "") or "").split(",")[0].strip()
+        if xff:
+            return xff
+        xri = (handler.headers.get("X-Real-IP", "") or "").strip()
+        if xri:
+            return xri
+        addr = getattr(handler, "client_address", None)
+        if addr:
+            return str(addr[0])
+    except Exception:
+        pass
+    return None
+
+
 # ── Cookie helpers ─────────────────────────────────────────────────────────────
 
 COOKIE_NAME = "hermes_user_session"
@@ -535,7 +558,7 @@ def handle_post_setup(handler, body: dict) -> bool:
 
 def handle_post_login(handler, body: dict, query: dict) -> bool:
     """POST /auth/login — validate credentials and set session cookie."""
-    from api.userauth import attempt_login, create_session
+    from api.userauth import RateLimitedError, attempt_login, create_session
 
     email = (body.get("email") or "").strip()
     password = body.get("password") or ""
@@ -556,8 +579,19 @@ def handle_post_login(handler, body: dict, query: dict) -> bool:
     if not email:
         return _html_page(handler, _login_page("Invalid email or password.", next_url), status=401)
 
-    user = attempt_login(email, password)
-    if not user:
+    client_ip = _get_client_ip(handler)
+
+    try:
+        user = attempt_login(email, password, ip=client_ip)
+    except RateLimitedError as exc:
+        retry_after = exc.retry_after or 30
+        msg = (
+            f"Too many login attempts. Please wait {retry_after} second"
+            f"{'s' if retry_after != 1 else ''} before trying again."
+        )
+        handler.send_header("Retry-After", str(retry_after))
+        return _html_page(handler, _login_page(msg, next_url), status=429)
+    except ValueError:
         return _html_page(handler, _login_page("Invalid email or password.", next_url), status=401)
 
     token = create_session(user["id"])
@@ -723,6 +757,80 @@ def handle_delete_invite(handler, invite_id: str) -> bool:
         return _json_response(handler, {"error": str(e)}, status=400)
 
     return _json_response(handler, {"ok": True})
+
+
+def handle_post_change_password(handler, body: dict) -> bool:
+    """POST /auth/change-password — change the current user's password."""
+    from api.userauth import change_password
+
+    current = _get_current_user(handler)
+    if not current:
+        return _json_response(handler, {"error": "Authentication required"}, status=401)
+
+    current_password = body.get("current_password") or ""
+    new_password = body.get("new_password") or ""
+
+    if not current_password or not new_password:
+        return _json_response(handler, {"error": "current_password and new_password are required."}, status=400)
+
+    # Get the current session token to keep alive
+    keep_token = _parse_user_session_cookie(handler) or ""
+
+    try:
+        change_password(current["id"], current_password, new_password, keep_token)
+    except ValueError as e:
+        msg = str(e)
+        if msg == "current_password":
+            return _json_response(handler, {"error": "Current password is incorrect."}, status=401)
+        return _json_response(handler, {"error": msg}, status=400)
+    except KeyError:
+        return _json_response(handler, {"error": "User not found."}, status=404)
+
+    return _json_response(handler, {"ok": True})
+
+
+def handle_post_reset_password(handler, user_id: str) -> bool:
+    """POST /api/users/<id>/reset-password — Owner-only: generate a temp password."""
+    from api.userauth import reset_user_password
+
+    current = _get_current_user(handler)
+    if not current:
+        return _json_response(handler, {"error": "Authentication required"}, status=401)
+
+    if current["role"] != "owner":
+        return _json_response(handler, {"error": "Owner role required."}, status=403)
+
+    # Owners cannot reset their own password via this endpoint (use change-password)
+    if current["id"] == user_id:
+        return _json_response(handler, {"error": "Use the change-password form to update your own password."}, status=400)
+
+    try:
+        result = reset_user_password(user_id, current["role"])
+    except PermissionError as e:
+        return _json_response(handler, {"error": str(e)}, status=403)
+    except KeyError:
+        return _json_response(handler, {"error": "User not found."}, status=404)
+
+    return _json_response(handler, {"ok": True, "temp_password": result["temp_password"], "expires_at": result["expires_at"]})
+
+
+def handle_post_unlock_login(handler, user_id: str) -> bool:
+    """POST /api/users/<id>/unlock-login — Owner-only: clear login rate-limit lockout."""
+    from api.userauth import get_user_by_id, unlock_login_attempts
+
+    current = _get_current_user(handler)
+    if not current:
+        return _json_response(handler, {"error": "Authentication required"}, status=401)
+
+    if current["role"] != "owner":
+        return _json_response(handler, {"error": "Owner role required."}, status=403)
+
+    target = get_user_by_id(user_id)
+    if not target:
+        return _json_response(handler, {"error": "User not found."}, status=404)
+
+    unlock_login_attempts(target["email"])
+    return _json_response(handler, {"ok": True, "email": target["email"]})
 
 
 # ── Utility ───────────────────────────────────────────────────────────────────

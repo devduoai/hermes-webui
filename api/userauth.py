@@ -82,7 +82,19 @@ CREATE INDEX IF NOT EXISTS idx_invites_email    ON invites(email);
 
 @contextmanager
 def _conn() -> Generator[sqlite3.Connection, None, None]:
-    """Open auth.db with WAL mode and foreign keys enabled."""
+    """Open auth.db with WAL mode and foreign keys enabled.
+
+    IMPORTANT — WAL mode robustness: auth.db uses SQLite WAL mode, which means
+    changes made by *this* connection are only guaranteed durable once the WAL
+    is checkpointed.  Any out-of-process write (e.g. ``docker exec python3`` or
+    ``sqlite3`` CLI) MUST call ``PRAGMA wal_checkpoint(TRUNCATE)`` after
+    committing, otherwise the live webui process's next checkpoint will silently
+    overwrite the externally-committed data.
+
+    Recommended: always use the in-app endpoints (/auth/change-password,
+    /api/users/<id>/reset-password) which share this connection pool and are
+    immune to WAL-reorder issues.
+    """
     db = _db_path()
     db.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(db), timeout=15)
@@ -306,6 +318,91 @@ def delete_other_sessions(user_id: str, keep_token: str) -> None:
         con.commit()
 
 
+def delete_all_sessions(user_id: str) -> None:
+    """Invalidate ALL sessions for user_id (for owner-driven reset)."""
+    with _conn() as con:
+        con.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        con.commit()
+
+
+def change_password(user_id: str, current_password: str, new_password: str, keep_token: str) -> None:
+    """
+    Change a user's password.
+
+    Verifies current_password against the stored hash, validates new_password
+    against policy, updates the hash, and invalidates all sessions except
+    keep_token (the caller's current session).
+
+    Raises:
+        ValueError("current_password"): current password is wrong.
+        ValueError(<policy message>): new password fails policy.
+        KeyError: user not found.
+    """
+    err = validate_password(new_password)
+    if err:
+        raise ValueError(err)
+    with _conn() as con:
+        row = con.execute(
+            "SELECT id, password_hash FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+        if not row:
+            raise KeyError(f"User {user_id!r} not found.")
+        if not verify_password_hash(current_password, row["password_hash"]):
+            raise ValueError("current_password")
+        new_hash = hash_password(new_password)
+        con.execute(
+            "UPDATE users SET password_hash=? WHERE id=?",
+            (new_hash, user_id),
+        )
+        con.execute(
+            "DELETE FROM sessions WHERE user_id=? AND id!=?",
+            (user_id, keep_token),
+        )
+        con.commit()
+
+
+# Characters that are unambiguous for temp passwords (no 0/O/1/l/I)
+_TEMP_PW_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
+_TEMP_PW_LEN = 16
+
+
+def generate_temp_password() -> str:
+    """Generate a 16-char alphanumeric temp password without ambiguous characters."""
+    return "".join(secrets.choice(_TEMP_PW_CHARS) for _ in range(_TEMP_PW_LEN))
+
+
+def reset_user_password(target_user_id: str, acting_user_role: str) -> dict:
+    """
+    Owner-only: generate a temp password for target_user_id, update their hash,
+    wipe all their sessions, and return {temp_password, expires_at}.
+
+    The temp password is valid for 24 hours (caller must share it out-of-band).
+    Raises:
+        PermissionError: acting_user_role is not 'owner'.
+        KeyError: target_user_id not found.
+    """
+    if acting_user_role != "owner":
+        raise PermissionError("Owner role required to reset passwords.")
+    temp_pw = generate_temp_password()
+    new_hash = hash_password(temp_pw)
+    expires_at = int(time.time()) + 86400  # 24 hours
+    with _conn() as con:
+        row = con.execute("SELECT id FROM users WHERE id=?", (target_user_id,)).fetchone()
+        if not row:
+            raise KeyError(f"User {target_user_id!r} not found.")
+        con.execute(
+            "UPDATE users SET password_hash=? WHERE id=?",
+            (new_hash, target_user_id),
+        )
+        con.execute("DELETE FROM sessions WHERE user_id=?", (target_user_id,))
+        con.commit()
+    logger.info(
+        "Password reset by owner for user_id=%s (temp pw NOT logged)",
+        target_user_id,
+    )
+    return {"temp_password": temp_pw, "expires_at": expires_at}
+
+
 # ── Invite management ─────────────────────────────────────────────────────────
 
 def create_invite(email: str, role: str, created_by: str) -> dict:
@@ -450,58 +547,118 @@ def revoke_invite(invite_id: str, acting_user_id: str, acting_role: str) -> None
     logger.info("userauth: invite %s revoked by %s", invite_id, acting_user_id)
 
 
-# ── Rate limiting (per-email, in-memory) ──────────────────────────────────────
+# ── Rate limiting (per-email + per-IP, in-memory) ─────────────────────────────
 
 import threading as _threading
 
 _rate_limit_lock = _threading.Lock()
-_rate_limit_attempts: dict[str, list[float]] = {}  # email → list of timestamps
+# Maps key (email or IP) -> list of failure timestamps within the window
+_rate_limit_attempts: dict[str, list[float]] = {}
+
+# Exponential backoff schedule (seconds to wait before next attempt allowed).
+# Index = number of failures in window; plateau at last entry.
+_BACKOFF_SCHEDULE = [0, 0, 1, 2, 5, 10, 30]  # 0 = no delay for first 2 failures
 
 
-def check_login_rate(email: str) -> bool:
-    """Return True if the email is not rate-limited, False if it is."""
-    now = time.time()
+class RateLimitedError(Exception):
+    """Raised by attempt_login when the caller is rate-limited.
+
+    Attributes:
+        retry_after: seconds the caller should wait before retrying.
+        key: the rate-limit key that triggered (email or IP).
+    """
+    def __init__(self, retry_after: int, key: str = ""):
+        self.retry_after = retry_after
+        self.key = key
+        super().__init__(f"Rate limited ({key}): retry after {retry_after}s")
+
+
+def _get_window_attempts(key: str, now: float) -> list[float]:
+    """Return pruned attempt list for *key* within the current window (not locked)."""
     window_start = now - _RATE_LIMIT_WINDOW
-    with _rate_limit_lock:
-        attempts = [t for t in _rate_limit_attempts.get(email, []) if t > window_start]
-        _rate_limit_attempts[email] = attempts
-        return len(attempts) < _RATE_LIMIT_MAX
+    attempts = [t for t in _rate_limit_attempts.get(key, []) if t > window_start]
+    _rate_limit_attempts[key] = attempts
+    return attempts
 
 
-def record_login_failure(email: str) -> None:
-    """Record a failed login attempt for rate limiting."""
+def _backoff_seconds(n_failures: int) -> int:
+    """Return the required wait time in seconds given *n_failures* in window."""
+    idx = min(n_failures, len(_BACKOFF_SCHEDULE) - 1)
+    return _BACKOFF_SCHEDULE[idx]
+
+
+def check_login_rate(email: str, ip: str | None = None) -> None:
+    """Check rate limit for *email* (and optionally *ip*).
+
+    Raises RateLimitedError if rate-limited; otherwise returns None.
+    Does NOT record a failure — call record_login_failure() separately.
+
+    This replaces the old bool-returning version. Callers that checked
+    ``if not check_login_rate(email)`` must switch to try/except.
+    """
     now = time.time()
     with _rate_limit_lock:
-        _rate_limit_attempts.setdefault(email, []).append(now)
+        for key in filter(None, [email.strip().lower(), ip]):
+            attempts = _get_window_attempts(key, now)
+            n = len(attempts)
+            if n >= _RATE_LIMIT_MAX:
+                retry_after = _backoff_seconds(n)
+                raise RateLimitedError(retry_after=retry_after, key=key)
 
 
-def clear_login_attempts(email: str) -> None:
-    """Clear login failure record (on successful login)."""
+def record_login_failure(email: str, ip: str | None = None) -> None:
+    """Record a failed login attempt for rate limiting (email + optional IP)."""
+    now = time.time()
     with _rate_limit_lock:
-        _rate_limit_attempts.pop(email, None)
+        for key in filter(None, [email.strip().lower(), ip]):
+            _rate_limit_attempts.setdefault(key, []).append(now)
+
+
+def clear_login_attempts(email: str, ip: str | None = None) -> None:
+    """Clear login failure record on successful login (email + optional IP)."""
+    with _rate_limit_lock:
+        for key in filter(None, [email.strip().lower(), ip]):
+            _rate_limit_attempts.pop(key, None)
+
+
+def unlock_login_attempts(email: str) -> None:
+    """Owner-only: clear rate-limit state for a user email (unlocks silent lockout)."""
+    with _rate_limit_lock:
+        _rate_limit_attempts.pop(email.strip().lower(), None)
+    logger.info("userauth: rate-limit cleared for %s", email.strip().lower())
+
+
+def get_login_attempt_count(email: str) -> int:
+    """Return the number of failed login attempts for *email* in the current window."""
+    now = time.time()
+    with _rate_limit_lock:
+        return len(_get_window_attempts(email.strip().lower(), now))
 
 
 # ── Login helper ──────────────────────────────────────────────────────────────
 
-def attempt_login(email: str, password: str) -> dict | None:
+def attempt_login(email: str, password: str, ip: str | None = None) -> dict:
     """
-    Attempt to log in. Returns the user dict on success, None on failure.
-    Handles rate limiting delay internally.
+    Attempt to log in. Returns the user dict on success.
+
+    Raises:
+        RateLimitedError: if the email or IP is rate-limited (do NOT sleep —
+            return 429 + Retry-After to the caller immediately).
+        ValueError("invalid_credentials"): if email/password don't match.
+
     Does NOT create a session — caller must call create_session().
     """
     email_norm = email.strip().lower()
 
-    if not check_login_rate(email_norm):
-        # Apply artificial delay to slow brute-force even when rate-limited
-        time.sleep(_RATE_LIMIT_DELAY)
-        return None
+    # Raises RateLimitedError if limited — caller handles 429, no sleep here.
+    check_login_rate(email_norm, ip)
 
     user = get_user_by_email(email_norm)
     if not user or not verify_password_hash(password, user["password_hash"]):
-        record_login_failure(email_norm)
-        return None
+        record_login_failure(email_norm, ip)
+        raise ValueError("invalid_credentials")
 
-    clear_login_attempts(email_norm)
+    clear_login_attempts(email_norm, ip)
     update_user_last_login(user["id"])
     return user
 

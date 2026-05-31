@@ -5187,6 +5187,23 @@ def handle_post(handler, parsed) -> bool:
         from api.userauth_routes import handle_post_accept_invite, _read_form_or_json
         _body = _read_form_or_json(handler)
         return handle_post_accept_invite(handler, _body)
+
+    if parsed.path == "/auth/change-password":
+        from api.userauth_routes import handle_post_change_password, _read_form_or_json
+        _body = _read_form_or_json(handler)
+        return handle_post_change_password(handler, _body)
+
+    if parsed.path.startswith("/api/users/") and parsed.path.endswith("/reset-password"):
+        _uid = parsed.path[len("/api/users/"):-len("/reset-password")]
+        if _uid:
+            from api.userauth_routes import handle_post_reset_password
+            return handle_post_reset_password(handler, _uid)
+
+    if parsed.path.startswith("/api/users/") and parsed.path.endswith("/unlock-login"):
+        _uid = parsed.path[len("/api/users/"):-len("/unlock-login")]
+        if _uid:
+            from api.userauth_routes import handle_post_unlock_login
+            return handle_post_unlock_login(handler, _uid)
     # ───────────────────────────────────────────────────────────────────────
 
     if parsed.path == "/api/upload":
@@ -6220,6 +6237,19 @@ def handle_post(handler, parsed) -> bool:
         requested_clear_password = bool(body.get("_clear_password") or requested_passwordless)
         if requested_passwordless:
             body["_clear_password"] = True
+
+        # Per-user auth is the only supported auth path. The legacy shared-password
+        # gate (HERMES_WEBUI_PASSWORD / settings.json password_hash) is deprecated.
+        # Block attempts to set a shared password when per-user auth is active.
+        if requested_password:
+            from api.userauth import is_userauth_active
+            if is_userauth_active():
+                return bad(
+                    handler,
+                    "Shared-password auth is disabled — per-user auth is active. "
+                    "Use Settings \u2192 Account to change your password.",
+                    409,
+                )
 
         # #1560: HERMES_WEBUI_PASSWORD env var takes precedence in
         # api.auth.get_password_hash(), so writing password_hash to settings.json

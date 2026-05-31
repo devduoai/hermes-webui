@@ -8897,6 +8897,12 @@ async function loadUsersPanel(force) {
           : 'Never';
         const badge = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;background:${u.role==='owner'?'#302060':'#103030'};color:${u.role==='owner'?'#c090f8':'#60d0a0'}">${u.role}</span>`;
         const isCurrentUser = currentUser && u.id === currentUser.id;
+        const resetBtn = (isOwner && !isCurrentUser)
+          ? `<button class="sm-btn" onclick="usersResetPassword('${u.id}','${u.email.replace(/'/g,"\\'")}',this)" style="padding:3px 8px;font-size:11px;color:#70a8e8;border-color:rgba(112,168,232,.3);margin-right:4px">Reset pw</button>`
+          : '';
+        const unlockBtn = (isOwner && !isCurrentUser)
+          ? `<button class="sm-btn" onclick="usersUnlockLogin('${u.id}','${u.email.replace(/'/g,"\\'")}',this)" style="padding:3px 8px;font-size:11px;color:#a8d08d;border-color:rgba(168,208,141,.3);margin-right:4px" title="Clear login rate-limit lockout">Unlock</button>`
+          : '';
         const delBtn = (isOwner && !isCurrentUser)
           ? `<button class="sm-btn" onclick="usersDeleteUser('${u.id}','${u.email.replace(/'/g,"\\'")}',this)" style="padding:3px 8px;font-size:11px;color:#e87070;border-color:rgba(232,112,112,.3)">Delete</button>`
           : '';
@@ -8904,7 +8910,7 @@ async function loadUsersPanel(force) {
           <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);color:var(--text)">${u.email}${isCurrentUser?'<span style="margin-left:6px;font-size:10px;color:var(--muted)">(you)</span>':''}</td>
           <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border)">${badge}</td>
           <td style="padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);color:var(--muted)">${lastLogin}</td>
-          <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${delBtn}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${resetBtn}${unlockBtn}${delBtn}</td>
         </tr>`;
       }).join('');
       container.innerHTML = `<table style="width:100%;border-collapse:collapse">
@@ -9089,4 +9095,144 @@ if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', _initUsersNavVisibility);
 } else {
   _initUsersNavVisibility();
+}
+
+// ── Account panel ─────────────────────────────────────────────────────────────
+
+// Show Account nav item for any authenticated user (not just owners).
+async function _initAccountNavVisibility() {
+  const btn = $('settingsMenuAccountBtn');
+  if (!btn) return;
+  try {
+    const res = await fetch('auth/me', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    if (!res.ok) { btn.style.display = 'none'; return; }
+    const data = await res.json();
+    if (data.user) {
+      btn.style.display = '';
+    } else {
+      btn.style.display = 'none';
+    }
+  } catch (e) {
+    btn.style.display = 'none';
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _initAccountNavVisibility);
+} else {
+  _initAccountNavVisibility();
+}
+
+async function accountChangePassword() {
+  const currentPwEl = $('accountCurrentPw');
+  const newPwEl = $('accountNewPw');
+  const confirmPwEl = $('accountConfirmPw');
+  const resultEl = $('accountChangePwResult');
+  const btn = $('btnAccountChangePw');
+  if (!currentPwEl || !newPwEl || !confirmPwEl) return;
+
+  const currentPw = currentPwEl.value || '';
+  const newPw = newPwEl.value || '';
+  const confirmPw = confirmPwEl.value || '';
+
+  const showResult = (msg, isError) => {
+    if (!resultEl) return;
+    resultEl.style.display = '';
+    resultEl.style.color = isError ? '#e87070' : '#60d0a0';
+    resultEl.textContent = msg;
+  };
+
+  if (!currentPw) { showResult('Current password is required.', true); currentPwEl.focus(); return; }
+  if (!newPw) { showResult('New password is required.', true); newPwEl.focus(); return; }
+  if (newPw !== confirmPw) { showResult('New passwords do not match.', true); confirmPwEl.focus(); return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Updating\u2026'; }
+  if (resultEl) resultEl.style.display = 'none';
+
+  try {
+    const res = await fetch('auth/change-password', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ current_password: currentPw, new_password: newPw }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      showResult(data.error || 'Failed to update password.', true);
+    } else {
+      showResult('Password updated successfully.', false);
+      currentPwEl.value = '';
+      newPwEl.value = '';
+      confirmPwEl.value = '';
+    }
+  } catch (e) {
+    showResult('Error: ' + (e.message || e), true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
+  }
+}
+
+async function usersUnlockLogin(userId, email, btnEl) {
+  if (!confirm('Clear login lockout for ' + email + '? This lets them attempt to log in again immediately.')) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Unlocking\u2026'; }
+
+  try {
+    const res = await fetch('api/users/' + encodeURIComponent(userId) + '/unlock-login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      alert(data.error || 'Unlock failed.');
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Unlock'; }
+    } else {
+      if (btnEl) { btnEl.textContent = 'Unlocked \u2713'; setTimeout(() => { if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Unlock'; } }, 2000); }
+    }
+  } catch (e) {
+    alert('Error: ' + (e.message || e));
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Unlock'; }
+  }
+}
+
+async function usersResetPassword(userId, email, btnEl) {
+  if (!confirm('Reset password for ' + email + '? This will generate a temporary password and log them out of all devices.')) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Resetting\u2026'; }
+
+  try {
+    const res = await fetch('api/users/' + encodeURIComponent(userId) + '/reset-password', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      alert(data.error || 'Reset failed.');
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Reset pw'; }
+    } else {
+      const tempPw = data.temp_password || '';
+      const expiresDate = data.expires_at ? new Date(data.expires_at * 1000).toLocaleString() : '24 hours';
+      // Show the temp password in a modal-like overlay
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center';
+      overlay.innerHTML = `
+        <div style="background:#1a1a24;border:1px solid #2a2a3a;border-radius:12px;padding:24px 28px;max-width:440px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.6)">
+          <h3 style="color:#f0f0f8;font-size:1rem;margin-bottom:8px">Temporary Password</h3>
+          <p style="color:#aaa;font-size:12px;margin-bottom:16px">Share this with <strong style="color:#e0e0e8">${email}</strong>. They should change it after logging in. Valid until ${expiresDate}.</p>
+          <div style="background:#111118;border:1px solid #333;border-radius:6px;padding:12px;font-family:monospace;font-size:16px;color:#c090f8;letter-spacing:2px;text-align:center;margin-bottom:12px">${tempPw}</div>
+          <div style="display:flex;gap:8px">
+            <button class="sm-btn" onclick="navigator.clipboard.writeText(${JSON.stringify(tempPw)}).then(()=>{this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy'},2000)})" style="padding:6px 14px;font-size:12px">Copy</button>
+            <button class="sm-btn" onclick="this.closest('div[style*=\"position:fixed\"]').remove()" style="padding:6px 14px;font-size:12px;margin-left:auto">Close</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Reset pw'; }
+    }
+  } catch (e) {
+    alert('Error: ' + (e.message || e));
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Reset pw'; }
+  }
 }
