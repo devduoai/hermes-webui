@@ -538,7 +538,8 @@ def handle_get_users_page(handler) -> bool:
     from api.userauth import list_users, list_invites
     users = list_users()
     invites = list_invites(viewer_user_id=user["id"], viewer_role=user["role"])
-    return _html_page(handler, _users_page(user, users, invites))
+    csrf_token = _get_csrf_token(handler)
+    return _html_page(handler, _users_page(user, users, invites, csrf_token=csrf_token))
 
 
 def handle_get_auth_me(handler) -> bool:
@@ -689,6 +690,8 @@ def handle_post_invite(handler, body: dict, query: dict) -> bool:
     email = (body.get("email") or "").strip()
     role = (body.get("role") or "").strip().lower()
 
+    csrf_token = _get_csrf_token(handler)
+
     # Role matrix: admins cannot invite owners
     if user["role"] == "admin" and role == "owner":
         is_xhr = handler.headers.get("X-Requested-With") == "XMLHttpRequest"
@@ -699,7 +702,7 @@ def handle_post_invite(handler, body: dict, query: dict) -> bool:
         invites = list_invites(viewer_user_id=user["id"], viewer_role=user["role"])
         return _html_page(
             handler,
-            _users_page(user, users, invites),
+            _users_page(user, users, invites, csrf_token=csrf_token),
             status=403
         )
 
@@ -712,7 +715,7 @@ def handle_post_invite(handler, body: dict, query: dict) -> bool:
         from api.userauth import list_users, list_invites
         users = list_users()
         invites = list_invites(viewer_user_id=user["id"], viewer_role=user["role"])
-        return _html_page(handler, _users_page(user, users, invites), status=400)
+        return _html_page(handler, _users_page(user, users, invites, csrf_token=csrf_token), status=400)
 
     # Build the invite URL from the Host header
     host = handler.headers.get("Host", "localhost:8787")
@@ -727,7 +730,7 @@ def handle_post_invite(handler, body: dict, query: dict) -> bool:
     from api.userauth import list_users, list_invites
     users = list_users()
     invites = list_invites(viewer_user_id=user["id"], viewer_role=user["role"])
-    return _html_page(handler, _users_page(user, users, invites, invite_url=invite_url))
+    return _html_page(handler, _users_page(user, users, invites, invite_url=invite_url, csrf_token=csrf_token))
 
 
 def handle_post_accept_invite(handler, body: dict) -> bool:

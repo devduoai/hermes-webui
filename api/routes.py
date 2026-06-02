@@ -1326,7 +1326,6 @@ def _csrf_exempt_path(path: str) -> bool:
         "/auth/login",
         "/auth/logout",
         "/auth/accept-invite",
-        "/users/invite",  # user management page doesn't carry legacy CSRF token
     }
 
 
