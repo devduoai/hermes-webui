@@ -134,6 +134,18 @@ def _get_current_user(handler) -> dict | None:
     return get_session_user(token)
 
 
+def _get_csrf_token(handler) -> str:
+    """Return the CSRF token bound to the current session, or empty string."""
+    try:
+        from api.auth import csrf_token_for_session
+        cookie = _parse_user_session_cookie(handler)
+        if cookie:
+            return csrf_token_for_session(cookie) or ""
+    except Exception:
+        pass
+    return ""
+
+
 # ── Response helpers ──────────────────────────────────────────────────────────
 
 def _json_response(handler, data: dict, status: int = 200) -> bool:
@@ -315,7 +327,7 @@ def _accept_invite_page(email: str, token: str, error: str = "") -> str:
 </body></html>"""
 
 
-def _users_page(current_user: dict, users: list, invites: list, invite_url: str = "") -> str:
+def _users_page(current_user: dict, users: list, invites: list, invite_url: str = "", csrf_token: str = "") -> str:
     role = current_user["role"]
     is_owner = role == "owner"
 
@@ -370,15 +382,15 @@ function copyInvite() {{
 
     invite_section = f"""
 <h2 style="font-size:1rem;margin-top:2rem;margin-bottom:0.5rem">Invite User</h2>
-<form method="POST" action="/users/invite" id="invite-form">
+<form id="invite-form" onsubmit="submitInvite(event)">
   <div class="flex-row">
     <div class="flex-1">
       <label>Email</label>
-      <input type="email" name="email" required placeholder="invitee@example.com">
+      <input type="email" id="invite-email" name="email" required placeholder="invitee@example.com">
     </div>
     <div>
       <label>Role</label>
-      <select name="role">{role_options}</select>
+      <select id="invite-role" name="role">{role_options}</select>
     </div>
   </div>
   <button type="submit" class="btn" style="margin-bottom:0">Generate Invite Link</button>
@@ -420,13 +432,43 @@ function copyInvite() {{
   {invite_table}
 </div>
 <script>
+var __csrf = {json.dumps(csrf_token)};
+function _csrfHeaders() {{
+  var h = {{'X-Requested-With': 'XMLHttpRequest'}};
+  if (__csrf) h['X-Hermes-CSRF-Token'] = __csrf;
+  return h;
+}}
+function submitInvite(e) {{
+  e.preventDefault();
+  var email = document.getElementById('invite-email').value;
+  var role = document.getElementById('invite-role').value;
+  fetch('/users/invite', {{
+    method: 'POST',
+    headers: Object.assign({{'Content-Type': 'application/json'}}, _csrfHeaders()),
+    body: JSON.stringify({{email: email, role: role}})
+  }})
+    .then(function(r) {{ return r.json(); }})
+    .then(function(d) {{
+      if (d.ok) {{
+        var box = document.getElementById('invite-url-box');
+        if (box) {{ box.textContent = d.invite_url; }} else {{
+          var div = document.createElement('div');
+          div.className = 'invite-box'; div.id = 'invite-url-box';
+          div.textContent = d.invite_url;
+          document.getElementById('invite-form').after(div);
+        }}
+        navigator.clipboard && navigator.clipboard.writeText(d.invite_url);
+      }} else {{ alert(d.error || 'Invite failed'); }}
+    }})
+    .catch(function(err) {{ alert('Request failed: ' + err); }});
+}}
 function doLogout() {{
-  fetch('/auth/logout', {{method:'POST', headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+  fetch('/auth/logout', {{method:'POST', headers:_csrfHeaders()}})
     .then(function() {{ window.location = '/login'; }});
 }}
 function deleteUser(id, email) {{
   if (!confirm('Delete user ' + email + '?')) return;
-  fetch('/users/' + id, {{method:'DELETE', headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+  fetch('/users/' + id, {{method:'DELETE', headers:_csrfHeaders()}})
     .then(function(r) {{ return r.json(); }})
     .then(function(d) {{
       if (d.ok) window.location.reload();
@@ -435,7 +477,7 @@ function deleteUser(id, email) {{
 }}
 function revokeInvite(id, email) {{
   if (!confirm('Revoke invite for ' + email + '?')) return;
-  fetch('/users/invite/' + id, {{method:'DELETE', headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+  fetch('/users/invite/' + id, {{method:'DELETE', headers:_csrfHeaders()}})
     .then(function(r) {{ return r.json(); }})
     .then(function(d) {{
       if (d.ok) window.location.reload();
@@ -524,12 +566,14 @@ def handle_get_users_api(handler) -> bool:
 # ── POST handlers ─────────────────────────────────────────────────────────────
 
 def handle_post_setup(handler, body: dict) -> bool:
-    """POST /auth/setup — create the initial Owner account."""
-    from api.userauth import user_count, create_user, create_session
-    import sqlite3
+    """POST /auth/setup — create the initial Owner account.
 
-    if user_count() > 0:
-        return _redirect(handler, "/login")
+    The check-then-insert is atomic: setup_first_owner uses BEGIN EXCLUSIVE so
+    two concurrent requests cannot both pass the user_count == 0 guard and
+    create duplicate Owner accounts (B4 race condition fix).
+    """
+    import sqlite3
+    from api.userauth import AlreadySetupError, create_session, setup_first_owner
 
     email = (body.get("email") or "").strip()
     password = body.get("password") or ""
@@ -541,11 +585,15 @@ def handle_post_setup(handler, body: dict) -> bool:
         return _html_page(handler, _setup_page("Passwords do not match."), status=400)
 
     try:
-        user = create_user(email, password, "owner")
+        user = setup_first_owner(email, password)
+    except AlreadySetupError:
+        return _redirect(handler, "/login")
     except ValueError as e:
         return _html_page(handler, _setup_page(str(e)), status=400)
     except sqlite3.IntegrityError:
-        return _html_page(handler, _setup_page("A user with that email already exists."), status=409)
+        # Unreachable under normal operation (exclusive lock prevents this),
+        # but kept as a final safety net.
+        return _html_page(handler, _setup_page("Setup already completed."), status=409)
 
     token = create_session(user["id"])
     handler.send_response(302)
