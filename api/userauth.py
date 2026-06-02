@@ -76,6 +76,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires  ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_invites_token    ON invites(token);
 CREATE INDEX IF NOT EXISTS idx_invites_email    ON invites(email);
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+    key        TEXT NOT NULL,
+    ts         REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_login_attempts_key ON login_attempts(key);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_ts  ON login_attempts(ts);
 """
 
 
@@ -594,11 +602,15 @@ def revoke_invite(invite_id: str, acting_user_id: str, acting_role: str) -> None
 
 # ── Rate limiting (per-email + per-IP, in-memory) ─────────────────────────────
 
-import threading as _threading
-
-_rate_limit_lock = _threading.Lock()
-# Maps key (email or IP) -> list of failure timestamps within the window
-_rate_limit_attempts: dict[str, list[float]] = {}
+# ── Rate limiting (per-email + per-IP, persisted in auth.db) ──────────────────
+#
+# Attempts are stored in the ``login_attempts`` table so the counter survives
+# container restarts.  This fixes B3 bug 2 (in-memory only) and means an admin
+# can inspect or clear the table directly via the DB if needed.
+#
+# Threading: each operation opens its own short-lived connection (SQLite WAL
+# is safe for concurrent reads; the brief INSERT/DELETE windows are negligible).
+# The old threading.Lock is removed — SQLite's own serialisation is sufficient.
 
 # Exponential backoff schedule (seconds to wait before next attempt allowed).
 # Index = number of failures in window; plateau at last entry.
@@ -618,18 +630,14 @@ class RateLimitedError(Exception):
         super().__init__(f"Rate limited ({key}): retry after {retry_after}s")
 
 
-def _get_window_attempts(key: str, now: float) -> list[float]:
-    """Return pruned attempt list for *key* within the current window (not locked)."""
-    window_start = now - _RATE_LIMIT_WINDOW
-    attempts = [t for t in _rate_limit_attempts.get(key, []) if t > window_start]
-    _rate_limit_attempts[key] = attempts
-    return attempts
-
-
 def _backoff_seconds(n_failures: int) -> int:
     """Return the required wait time in seconds given *n_failures* in window."""
     idx = min(n_failures, len(_BACKOFF_SCHEDULE) - 1)
     return _BACKOFF_SCHEDULE[idx]
+
+
+def _window_start(now: float) -> float:
+    return now - _RATE_LIMIT_WINDOW
 
 
 def check_login_rate(email: str, ip: str | None = None) -> None:
@@ -637,15 +645,16 @@ def check_login_rate(email: str, ip: str | None = None) -> None:
 
     Raises RateLimitedError if rate-limited; otherwise returns None.
     Does NOT record a failure — call record_login_failure() separately.
-
-    This replaces the old bool-returning version. Callers that checked
-    ``if not check_login_rate(email)`` must switch to try/except.
     """
     now = time.time()
-    with _rate_limit_lock:
+    ws = _window_start(now)
+    with _conn() as con:
         for key in filter(None, [email.strip().lower(), ip]):
-            attempts = _get_window_attempts(key, now)
-            n = len(attempts)
+            row = con.execute(
+                "SELECT COUNT(*) FROM login_attempts WHERE key=? AND ts>?",
+                (key, ws),
+            ).fetchone()
+            n = row[0] if row else 0
             if n >= _RATE_LIMIT_MAX:
                 retry_after = _backoff_seconds(n)
                 raise RateLimitedError(retry_after=retry_after, key=key)
@@ -654,30 +663,50 @@ def check_login_rate(email: str, ip: str | None = None) -> None:
 def record_login_failure(email: str, ip: str | None = None) -> None:
     """Record a failed login attempt for rate limiting (email + optional IP)."""
     now = time.time()
-    with _rate_limit_lock:
+    with _conn() as con:
         for key in filter(None, [email.strip().lower(), ip]):
-            _rate_limit_attempts.setdefault(key, []).append(now)
+            con.execute(
+                "INSERT INTO login_attempts (key, ts) VALUES (?, ?)",
+                (key, now),
+            )
+        con.commit()
+        # Opportunistic cleanup of very old rows (outside any window) to keep
+        # the table small.  The window is 15 min; purge anything older than
+        # 2× that to give admin queries some breathing room.
+        con.execute(
+            "DELETE FROM login_attempts WHERE ts<?",
+            (_window_start(now) - _RATE_LIMIT_WINDOW,),
+        )
+        con.commit()
 
 
 def clear_login_attempts(email: str, ip: str | None = None) -> None:
     """Clear login failure record on successful login (email + optional IP)."""
-    with _rate_limit_lock:
+    with _conn() as con:
         for key in filter(None, [email.strip().lower(), ip]):
-            _rate_limit_attempts.pop(key, None)
+            con.execute("DELETE FROM login_attempts WHERE key=?", (key,))
+        con.commit()
 
 
 def unlock_login_attempts(email: str) -> None:
-    """Owner-only: clear rate-limit state for a user email (unlocks silent lockout)."""
-    with _rate_limit_lock:
-        _rate_limit_attempts.pop(email.strip().lower(), None)
-    logger.info("userauth: rate-limit cleared for %s", email.strip().lower())
+    """Owner-only: clear rate-limit state for a user email (unlocks lockout)."""
+    key = email.strip().lower()
+    with _conn() as con:
+        con.execute("DELETE FROM login_attempts WHERE key=?", (key,))
+        con.commit()
+    logger.info("userauth: rate-limit cleared for %s", key)
 
 
 def get_login_attempt_count(email: str) -> int:
     """Return the number of failed login attempts for *email* in the current window."""
     now = time.time()
-    with _rate_limit_lock:
-        return len(_get_window_attempts(email.strip().lower(), now))
+    ws = _window_start(now)
+    with _conn() as con:
+        row = con.execute(
+            "SELECT COUNT(*) FROM login_attempts WHERE key=? AND ts>?",
+            (email.strip().lower(), ws),
+        ).fetchone()
+        return row[0] if row else 0
 
 
 # ── Login helper ──────────────────────────────────────────────────────────────
