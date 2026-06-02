@@ -135,12 +135,26 @@ def _get_current_user(handler) -> dict | None:
 
 
 def _get_csrf_token(handler) -> str:
-    """Return the CSRF token bound to the current session, or empty string."""
+    """Return the CSRF token bound to the current per-user session, or empty string.
+
+    Per-user session tokens are plain urlsafe strings (no .sig suffix), so
+    api.auth.csrf_token_for_session cannot be used directly (it expects the
+    old-style `token.signature` cookie format and returns None otherwise).
+    Instead, derive the CSRF token directly from the raw session token using
+    the same HMAC key and prefix that api.auth uses for old-style sessions.
+    This keeps the derivation consistent — the browser reads this value from
+    the rendered page and echoes it in X-Hermes-CSRF-Token; _check_csrf
+    verifies it by calling this same helper.
+    """
     try:
-        from api.auth import csrf_token_for_session
+        import hashlib
+        import hmac as _hmac
+        from api.auth import _signing_key
         cookie = _parse_user_session_cookie(handler)
         if cookie:
-            return csrf_token_for_session(cookie) or ""
+            return _hmac.new(
+                _signing_key(), f"csrf:{cookie}".encode(), hashlib.sha256
+            ).hexdigest()
     except Exception:
         pass
     return ""

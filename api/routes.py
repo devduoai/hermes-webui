@@ -1401,10 +1401,40 @@ def _check_csrf(handler) -> bool:
 
     from api.auth import CSRF_HEADER_NAME, is_auth_enabled, parse_cookie, verify_csrf_token
 
+    submitted = handler.headers.get(CSRF_HEADER_NAME) or handler.headers.get("X-CSRF-Token")
+
     if not is_auth_enabled():
+        # Old-style single-user auth is not active.  If per-user auth is
+        # active (has at least one registered user), enforce the CSRF token
+        # that the browser embeds from its per-user session cookie.
+        # Without this branch, same-origin authenticated POSTs with no
+        # CSRF token were silently allowed, leading to a confusing 501 when
+        # the downstream handler raised an uncaught exception instead of the
+        # expected 403.
+        try:
+            from api.userauth import is_userauth_active
+            if is_userauth_active():
+                from api.userauth_routes import _parse_user_session_cookie
+                user_cookie = _parse_user_session_cookie(handler)
+                if not user_cookie:
+                    # Unauthenticated request — auth gate already handles this;
+                    # CSRF enforcement doesn't apply without a session.
+                    return True
+                # Authenticated per-user session: CSRF token is required.
+                # Derive expected token the same way _get_csrf_token does.
+                import hashlib
+                import hmac as _hmac
+                from api.auth import _signing_key as _auth_signing_key
+                expected = _hmac.new(
+                    _auth_signing_key(), f"csrf:{user_cookie}".encode(), hashlib.sha256
+                ).hexdigest()
+                if submitted and _hmac.compare_digest(str(submitted), str(expected)):
+                    return True
+                return _set_csrf_failure_reason(handler, "token_mismatch")
+        except Exception:
+            pass
         return True
     cookie_val = parse_cookie(handler)
-    submitted = handler.headers.get(CSRF_HEADER_NAME) or handler.headers.get("X-CSRF-Token")
     if verify_csrf_token(cookie_val or "", submitted or ""):
         return True
     return _set_csrf_failure_reason(handler, "token_mismatch")
