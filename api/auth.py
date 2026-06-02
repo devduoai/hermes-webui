@@ -506,8 +506,28 @@ def check_auth(handler, parsed) -> bool:
         if is_userauth_active():
             from api.userauth_routes import userauth_check_auth
             return userauth_check_auth(handler, parsed)
-    except Exception:
-        pass  # fall through to legacy password check
+    except Exception as exc:
+        # SECURITY: do NOT fall through to legacy auth on userauth errors.
+        # The legacy gate is dormant (no env-var, no settings password) so a
+        # fall-through silently grants access. Instead, fail closed.
+        import logging
+        logging.getLogger(__name__).error(
+            "userauth check failed; failing closed: %s", exc, exc_info=True
+        )
+        # Send 503 (server error, NOT 401) so we don't leak that auth is broken,
+        # but never grant access on an internal exception.
+        if parsed.path.startswith('/api/'):
+            body = b'{"error":"Service temporarily unavailable"}'
+            handler.send_response(503)
+            handler.send_header('Content-Type', 'application/json')
+            handler.send_header('Content-Length', str(len(body)))
+            handler.end_headers()
+            handler.wfile.write(body)
+        else:
+            handler.send_response(503)
+            handler.send_header('Content-Length', '0')
+            handler.end_headers()
+        return False
 
     if not is_auth_enabled():
         return True

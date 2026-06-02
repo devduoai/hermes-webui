@@ -485,3 +485,175 @@ class TestResetUserPassword:
         after = int(time.time())
         assert result["expires_at"] >= before + 86399
         assert result["expires_at"] <= after + 86401
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for P0 security fix: check_auth fail-closed behaviour
+# (api/auth.py::check_auth -- formerly caught all exceptions and fell through
+# to the legacy gate, which returns True when no password is configured,
+# granting unauthenticated access on any transient userauth error.)
+# ---------------------------------------------------------------------------
+
+class _FakeHandler:
+    """Minimal HTTP handler stub that records send_response/send_header calls."""
+    def __init__(self):
+        self.status = None
+        self.sent_headers = []
+        self.body = bytearray()
+        self.wfile = self
+        self.headers = {}
+
+    def send_response(self, code):
+        self.status = code
+
+    def send_header(self, name, value):
+        self.sent_headers.append((name, value))
+
+    def end_headers(self):
+        pass
+
+    def write(self, data):
+        self.body.extend(data)
+
+    def header(self, name):
+        for key, value in self.sent_headers:
+            if key.lower() == name.lower():
+                return value
+        return None
+
+
+class TestCheckAuthFailClosed:
+    """P0 security regression: check_auth must fail closed on userauth errors."""
+
+    def _raise_db_error(self, handler, parsed):
+        raise RuntimeError("simulated DB failure")
+
+    def test_fail_closed_api_path_returns_503_not_200(self, monkeypatch):
+        """When userauth_check_auth raises, API requests get 503, not 200.
+
+        This is the exact exploit path: SQLite WAL contention (or any transient
+        error) in the userauth path previously fell through to the legacy gate.
+        The legacy gate sees no password configured and returns True, granting
+        unauthenticated access. The fix must intercept before that fall-through.
+        """
+        from types import SimpleNamespace
+        import importlib
+        import api.userauth as ua_mod
+        import api.userauth_routes as uar_mod
+
+        monkeypatch.setenv("HERMES_USERAUTH", "1")
+        monkeypatch.delenv("HERMES_WEBUI_PASSWORD", raising=False)
+        monkeypatch.setattr(ua_mod, "is_userauth_active", lambda: True)
+        monkeypatch.setattr(uar_mod, "userauth_check_auth", self._raise_db_error)
+
+        import api.auth as auth_mod
+        importlib.reload(auth_mod)
+
+        handler = _FakeHandler()
+        parsed = SimpleNamespace(path="/api/users", query="")
+        result = auth_mod.check_auth(handler, parsed)
+
+        assert result is False, "check_auth must return False on userauth error"
+        assert handler.status == 503, (
+            f"Expected 503 Service Unavailable, got {handler.status} -- "
+            "a 200 here means the auth fail-open bug is still present"
+        )
+
+    def test_fail_closed_page_path_returns_503_not_200(self, monkeypatch):
+        """When userauth raises, non-API (page) requests also get 503, not 200."""
+        from types import SimpleNamespace
+        import importlib
+        import api.userauth as ua_mod
+        import api.userauth_routes as uar_mod
+
+        monkeypatch.setenv("HERMES_USERAUTH", "1")
+        monkeypatch.delenv("HERMES_WEBUI_PASSWORD", raising=False)
+        monkeypatch.setattr(ua_mod, "is_userauth_active", lambda: True)
+        monkeypatch.setattr(uar_mod, "userauth_check_auth", self._raise_db_error)
+
+        import api.auth as auth_mod
+        importlib.reload(auth_mod)
+
+        handler = _FakeHandler()
+        parsed = SimpleNamespace(path="/settings", query="")
+        result = auth_mod.check_auth(handler, parsed)
+
+        assert result is False
+        assert handler.status == 503
+        assert handler.status != 200
+
+    def test_no_fall_through_to_legacy_without_env_password(self, monkeypatch):
+        """Without HERMES_WEBUI_PASSWORD set, a userauth error must NOT grant access.
+
+        Previously: exception -> fall-through -> is_auth_enabled() == False
+        -> return True (open access). This test pins that the fix closes the gate.
+        """
+        from types import SimpleNamespace
+        import importlib
+        import api.userauth as ua_mod
+        import api.userauth_routes as uar_mod
+
+        monkeypatch.delenv("HERMES_WEBUI_PASSWORD", raising=False)
+        monkeypatch.setattr(ua_mod, "is_userauth_active", lambda: True)
+        monkeypatch.setattr(uar_mod, "userauth_check_auth", self._raise_db_error)
+
+        import api.auth as auth_mod
+        importlib.reload(auth_mod)
+        auth_mod._invalidate_password_hash_cache()
+
+        handler = _FakeHandler()
+        parsed = SimpleNamespace(path="/api/users", query="")
+        result = auth_mod.check_auth(handler, parsed)
+
+        assert result is False, "No access must be granted when userauth throws"
+        assert handler.status == 503, (
+            f"Got status {handler.status} -- should be 503 (fail-closed). "
+            "If 200 or None, the fail-open bug is still present."
+        )
+
+    def test_happy_path_still_passes(self, monkeypatch):
+        """Baseline: when userauth works normally, check_auth delegates correctly."""
+        from types import SimpleNamespace
+        import importlib
+        import api.userauth as ua_mod
+        import api.userauth_routes as uar_mod
+
+        monkeypatch.setenv("HERMES_USERAUTH", "1")
+        monkeypatch.setattr(ua_mod, "is_userauth_active", lambda: True)
+        monkeypatch.setattr(uar_mod, "userauth_check_auth", lambda h, p: True)
+
+        import api.auth as auth_mod
+        importlib.reload(auth_mod)
+
+        handler = _FakeHandler()
+        parsed = SimpleNamespace(path="/api/users", query="")
+        result = auth_mod.check_auth(handler, parsed)
+
+        assert result is True, "Happy path: successful userauth must return True"
+        assert handler.status is None, "No response should be sent on success"
+
+    def test_happy_path_auth_denied_passes_through(self, monkeypatch):
+        """Baseline: when userauth correctly denies, check_auth returns False with 401."""
+        from types import SimpleNamespace
+        import importlib
+        import api.userauth as ua_mod
+        import api.userauth_routes as uar_mod
+
+        monkeypatch.setattr(ua_mod, "is_userauth_active", lambda: True)
+
+        def _deny(handler, parsed):
+            handler.send_response(401)
+            handler.end_headers()
+            return False
+
+        monkeypatch.setattr(uar_mod, "userauth_check_auth", _deny)
+
+        import api.auth as auth_mod
+        importlib.reload(auth_mod)
+
+        handler = _FakeHandler()
+        parsed = SimpleNamespace(path="/api/users", query="")
+        result = auth_mod.check_auth(handler, parsed)
+
+        assert result is False
+        assert handler.status == 401, "Normal denial should return 401 not 503"
