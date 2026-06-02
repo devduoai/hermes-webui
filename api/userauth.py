@@ -33,8 +33,7 @@ PASSWORD_MIN_LEN = 12
 PASSWORD_MAX_LEN = 128
 
 _RATE_LIMIT_WINDOW = 15 * 60   # 15 minutes
-_RATE_LIMIT_MAX = 5             # attempts before delay
-_RATE_LIMIT_DELAY = 5           # seconds of artificial delay
+_RATE_LIMIT_MAX = 5             # attempts before lockout triggers 429
 
 # ── DB path ───────────────────────────────────────────────────────────────────
 
@@ -170,6 +169,52 @@ def owner_count() -> int:
     with _conn() as con:
         row = con.execute("SELECT COUNT(*) FROM users WHERE role='owner'").fetchone()
         return row[0] if row else 0
+
+
+class AlreadySetupError(Exception):
+    """Raised by setup_first_owner when at least one user already exists."""
+
+
+def setup_first_owner(email: str, password: str) -> dict:
+    """Atomically create the first Owner account during fresh-install setup.
+
+    Uses ``BEGIN EXCLUSIVE`` so that two concurrent POST /auth/setup requests
+    cannot both pass the ``COUNT(*) == 0`` guard and both INSERT.  The second
+    concurrent request will block on the lock, then see ``count > 0`` and raise
+    :class:`AlreadySetupError`.
+
+    Raises:
+        ValueError: email/password validation failure (safe to show user).
+        AlreadySetupError: another request already created the first Owner.
+        sqlite3.IntegrityError: duplicate email (should be unreachable given the
+            exclusive lock, but kept as a final safety net).
+    """
+    email = email.strip().lower()
+    if not email or "@" not in email:
+        raise ValueError("Invalid email address.")
+    err = validate_password(password)
+    if err:
+        raise ValueError(err)
+
+    pw_hash = hash_password(password)
+    user_id = str(uuid.uuid4())
+    now = int(time.time())
+
+    with _conn() as con:
+        con.execute("BEGIN EXCLUSIVE")
+        (n,) = con.execute("SELECT COUNT(*) FROM users").fetchone()
+        if n > 0:
+            con.rollback()
+            raise AlreadySetupError("Setup already completed.")
+        con.execute(
+            "INSERT INTO users (id, email, password_hash, role, created_at)"
+            " VALUES (?,?,?,?,?)",
+            (user_id, email, pw_hash, "owner", now),
+        )
+        con.commit()
+
+    logger.info("userauth: created first owner %s via setup_first_owner", email)
+    return {"id": user_id, "email": email, "role": "owner", "created_at": now}
 
 
 def create_user(email: str, password: str, role: str) -> dict:
